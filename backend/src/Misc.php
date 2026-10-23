@@ -42,16 +42,17 @@ route('PATCH', '/api/notifications/{id}/read', function ($p) {
     reply(dto(byId('notifications', $id, true), [], ['is_read']), 'Notification marked as read');
 });
 
-route('GET', '/api/employees', function () { requireRole('ADMIN', 'CONTROLLER'); reply(array_map('dto', rows('SELECT * FROM employees ORDER BY id DESC'))); });
-route('GET', '/api/employees/{id}', function ($p) { requireRole('ADMIN', 'CONTROLLER'); reply(dto(byId('employees', (int)$p['id'], true))); });
+function employeeDto(array $employee): array { return dto($employee, ['email_id' => 'email']); }
+route('GET', '/api/employees', function () { requireRole('ADMIN', 'CONTROLLER'); reply(array_map('employeeDto', rows('SELECT * FROM employees ORDER BY id DESC'))); });
+route('GET', '/api/employees/{id}', function ($p) { requireRole('ADMIN', 'CONTROLLER'); reply(employeeDto(byId('employees', (int)$p['id'], true))); });
 route('POST', '/api/employees', function () {
-    requireRole('ADMIN', 'CONTROLLER'); $values = fields(body(), ['first_name', 'last_name', 'email']);
-    foreach (['first_name', 'last_name', 'email'] as $key) if (empty($values[$key])) fail("$key is required");
-    $id = insertRow('employees', $values); reply(dto(byId('employees', $id, true)), 'Employee created', 201);
+    requireRole('ADMIN', 'CONTROLLER'); $values = fields(body(), ['first_name', 'last_name', 'email_id'], ['email_id' => 'email']);
+    foreach (['first_name', 'last_name', 'email_id'] as $key) if (empty($values[$key])) fail("$key is required");
+    $id = insertRow('employees', $values); reply(employeeDto(byId('employees', $id, true)), 'Employee created', 201);
 });
 route('PUT', '/api/employees/{id}', function ($p) {
     requireRole('ADMIN', 'CONTROLLER'); $id = (int)$p['id']; byId('employees', $id, true);
-    updateRow('employees', $id, fields(body(), ['first_name', 'last_name', 'email'])); reply(dto(byId('employees', $id, true)), 'Employee updated');
+    updateRow('employees', $id, fields(body(), ['first_name', 'last_name', 'email_id'], ['email_id' => 'email'])); reply(employeeDto(byId('employees', $id, true)), 'Employee updated');
 });
 route('DELETE', '/api/employees/{id}', function ($p) {
     requireRole('ADMIN', 'CONTROLLER'); $id = (int)$p['id']; byId('employees', $id, true);
