@@ -1,0 +1,3477 @@
+import { useState, useEffect, useCallback } from 'react'
+import Sidebar from '../components/Sidebar'
+import Topbar from '../components/Topbar'
+import TripActionModal from '../components/TripActionModal'
+import { useD, useTheme } from '../context/ThemeContext'
+import { useAuth } from '../context/AuthContext'
+import { tripAPI, userAPI, vehicleAPI, serviceAPI, fuelAPI, notificationAPI } from '../services/api'
+import { formatFuelType, computeLogsEfficiency } from '../utils/fuelUtils'
+import {
+  MapPin, Navigation, Car, User, Calendar, Plus, Loader2,
+  Play, X, CheckCircle, Ban, Clock, MoreVertical, ClipboardList, Wrench, Fuel, AlertTriangle, UserCheck,
+  Trash2, Archive, Paperclip, Check, FileText, Eye, Gauge, DollarSign, Edit2, ChevronDown, ChevronUp,
+  Filter
+} from 'lucide-react'
+
+// ── Helpers to parse job type from purpose field ──────────────────────────
+const getJobType = (purposeText) => {
+  const p = purposeText || ''
+  if (p.startsWith('[Service]')) return 'SERVICE'
+  if (p.startsWith('[Fuel]')) return 'FUEL'
+  return 'TRIP'
+}
+
+const getCleanPurpose = (purposeText) => {
+  const p = purposeText || ''
+  return p.replace(/^\[(Service|Fuel|Trip)\]\s*/i, '').replace(/\[Access:(YES|NO)\]\s*/i, '')
+}
+
+const hasDriverServiceAccess = (trip) => {
+  if (!trip) return false
+  const type = getJobType(trip.purpose)
+  if (type !== 'SERVICE') return false
+  if (trip.allowDriverServiceLog === false) return false
+  if (trip.purpose?.includes('[Access:NO]')) return false
+  return true
+}
+
+const isJobServiceRecord = (serv, trip) => {
+  if (!serv || serv.deleted || serv.isDeleted || !trip) return false
+  const type = getJobType(trip.purpose)
+  if (type !== 'SERVICE') return false
+
+  // 1. Explicit tripId match (100% accurate)
+  if (serv.tripId != null && trip.id != null) {
+    return Number(serv.tripId) === Number(trip.id)
+  }
+
+  // If attached to another trip, do not match here
+  if (serv.tripId != null && trip.id != null && Number(serv.tripId) !== Number(trip.id)) {
+    return false
+  }
+
+  // 2. An ASSIGNED, DECLINED, or CANCELLED trip was never started/in-progress by driver,
+  // so untagged historical logs MUST NOT be attached to it!
+  const status = (trip.status || '').toUpperCase()
+  if (status !== 'STARTED' && status !== 'COMPLETED') {
+    return false
+  }
+
+  const servReg = (serv.vehicleRegNumber || '').replace(/^VEH-/i, '').trim().toUpperCase()
+  const tripReg = (trip.vehicleRegNumber || '').replace(/^VEH-/i, '').trim().toUpperCase()
+  if (servReg !== tripReg) return false
+
+  if (trip.driverUsername && serv.createdBy) {
+    if (serv.createdBy.toLowerCase() !== trip.driverUsername.toLowerCase()) return false
+  }
+
+  const cleanP = getCleanPurpose(trip.purpose)
+  const matchedType = SERVICE_TYPES.find(t => t.label.toLowerCase() === cleanP.toLowerCase())?.value
+  if (matchedType && serv.serviceType !== matchedType) return false
+  if (cleanP && serv.serviceTypeDetail && serv.serviceTypeDetail.toLowerCase() !== cleanP.toLowerCase()) return false
+
+  const tripDateStr = (trip.startedAt || trip.scheduledDate || trip.createdAt || '').split('T')[0]
+  if (tripDateStr && serv.serviceDate) {
+    const servDateStr = typeof serv.serviceDate === 'string' ? serv.serviceDate.split('T')[0] : ''
+    if (servDateStr !== tripDateStr) return false
+  }
+
+  return true
+}
+
+const hasAnyServiceRecordForTrip = (trip, allServices) => {
+  return (allServices || []).some(serv => isJobServiceRecord(serv, trip))
+}
+
+const isJobFuelLog = (log, trip) => {
+  if (!log || log.deleted || log.isDeleted || !trip) return false
+  const type = getJobType(trip.purpose)
+  if (type !== 'TRIP' && type !== 'FUEL') return false
+
+  // 1. Explicit tripId match (100% accurate)
+  if (log.tripId != null && trip.id != null) {
+    return Number(log.tripId) === Number(trip.id)
+  }
+
+  // If this log is attached to another trip, never match it here
+  if (log.tripId != null && trip.id != null && Number(log.tripId) !== Number(trip.id)) {
+    return false
+  }
+
+  // 2. An ASSIGNED, DECLINED, or CANCELLED trip was never started/in-progress by driver,
+  // so untagged historical logs MUST NOT be attached to it!
+  const status = (trip.status || '').toUpperCase()
+  if (status !== 'STARTED' && status !== 'COMPLETED') {
+    return false
+  }
+
+  const logReg = (log.vehicleRegNumber || '').replace(/^VEH-/i, '').trim().toUpperCase()
+  const tripReg = (trip.vehicleRegNumber || '').replace(/^VEH-/i, '').trim().toUpperCase()
+  if (logReg !== tripReg) return false
+
+  if (trip.driverUsername && log.driverUsername) {
+    if (log.driverUsername.toLowerCase() !== trip.driverUsername.toLowerCase()) return false
+  }
+
+  // Only show fuel records for this specific assigned job's scheduled timeframe
+  const tripDateStr = (trip.startedAt || trip.scheduledDate || trip.createdAt || '').split('T')[0]
+  if (tripDateStr && log.date) {
+    const logDateStr = typeof log.date === 'string' ? log.date.split('T')[0] : ''
+    if (logDateStr !== tripDateStr) return false
+  }
+
+  return true
+}
+
+// ── Helpers for checking overdue services (sync with ServicePage) ────────
+const getStatus = (s) => {
+  if (!s.serviceDate) return 'SCHEDULED'
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const scheduled = new Date(s.serviceDate)
+  scheduled.setHours(0, 0, 0, 0)
+  return scheduled > today ? 'SCHEDULED' : 'COMPLETED'
+}
+
+const getVehicleMilestones = (vehicle, services, intervals) => {
+  if (!vehicle || !intervals) return []
+  const vehicleIntervals = intervals.filter(i => i.vehicleType === vehicle.vehicleType)
+  
+  return vehicleIntervals.map(interval => {
+    const completed = services.filter(s =>
+      s.vehicleRegNumber === vehicle.registrationNo &&
+      s.serviceType === interval.serviceType &&
+      getStatus(s) === 'COMPLETED'
+    )
+    
+    let lastServiceMileage = vehicle.initialMileageKm != null ? Number(vehicle.initialMileageKm) : Number(vehicle.currentMileageKm || 0)
+    if (completed.length > 0) {
+      completed.sort((a, b) => Number(b.currentMileageKm || 0) - Number(a.currentMileageKm || 0))
+      lastServiceMileage = Number(completed[0].currentMileageKm || 0)
+    }
+    
+    const nextDueMileage = lastServiceMileage + interval.intervalKm
+    const currentMileage = vehicle.currentMileageKm || 0
+    const remainingKm = nextDueMileage - currentMileage
+    
+    let status = 'OK'
+    if (remainingKm <= 0) {
+      status = 'OVERDUE'
+    } else if (remainingKm <= 200) {
+      status = 'DUE_SOON'
+    }
+    
+    return {
+      serviceType: interval.serviceType,
+      status
+    }
+  })
+}
+
+const isServiceOverdueForVehicle = (vehicle, serviceType, services, intervals) => {
+  if (!vehicle) return false
+
+  // 1. Check mileage milestones
+  if (intervals && intervals.length > 0) {
+    const milestones = getVehicleMilestones(vehicle, services, intervals)
+    const m = milestones.find(ms => ms.serviceType === serviceType)
+    if (m && m.status === 'OVERDUE') return true
+  }
+
+  // 2. Check date-based overdue scheduled tasks
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const isOverdueDate = services.some(s => 
+    s.vehicleRegNumber === vehicle.registrationNo &&
+    s.serviceType === serviceType &&
+    getStatus(s) === 'SCHEDULED' &&
+    s.serviceDate &&
+    new Date(s.serviceDate) < today
+  )
+
+  return isOverdueDate
+}
+
+const SERVICE_TYPES = [
+  { value: 'OIL_CHANGE', label: 'Oil Change' },
+  { value: 'ENGINE_TUNE_UP', label: 'Engine Tune Up' },
+  { value: 'BRAKE_SERVICE', label: 'Brake Service' },
+  { value: 'TIRE_ROTATION', label: 'Tire Rotation' },
+  { value: 'TRANSMISSION_SERVICE', label: 'Transmission Service' },
+  { value: 'AC_SERVICE', label: 'AC Service' },
+  { value: 'BATTERY_REPLACEMENT', label: 'Battery Replacement' },
+  { value: 'GENERAL_INSPECTION', label: 'General Inspection' },
+  { value: 'OTHER', label: 'Other' },
+]
+
+// ── Status → badge styling ────────────────────────────────────────────────
+const statusBadge = (status) => {
+  const s = (status || 'ASSIGNED').toUpperCase()
+  switch (s) {
+    case 'STARTED':   return { label: 'In Progress', bg: 'rgba(56,189,248,0.12)', color: '#38bdf8', border: 'rgba(56,189,248,0.28)' }
+    case 'DECLINED':  return { label: 'Declined',    bg: 'rgba(239,68,68,0.12)', color: '#ef4444', border: 'rgba(239,68,68,0.28)' }
+    case 'COMPLETED': return { label: 'Completed',   bg: 'rgba(16,185,129,0.12)', color: '#10b981', border: 'rgba(16,185,129,0.28)' }
+    case 'CANCELLED': return { label: 'Cancelled',   bg: 'rgba(148,163,184,0.14)', color: '#94a3b8', border: 'rgba(148,163,184,0.28)' }
+    default:          return { label: 'Assigned',    bg: 'rgba(251,191,36,0.12)', color: '#f59e0b', border: 'rgba(251,191,36,0.28)' }
+  }
+}
+
+const fmtDate = (d) => {
+  if (!d) return '—'
+  const dt = new Date(d)
+  if (isNaN(dt.getTime())) return '—'
+  return dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+}
+
+const fmtDateTime = (d) => {
+  if (!d) return '—'
+  const dt = new Date(d)
+  if (isNaN(dt.getTime())) return '—'
+  return dt.toLocaleString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true
+  })
+}
+
+const up = (s) => (s || '').toUpperCase()
+
+const TripsPage = () => {
+  const D = useD()
+  const { theme } = useTheme()
+  const isDark = theme === 'blue'
+  const { user, isAdmin, isController } = useAuth()
+  const canManage = isAdmin || isController
+
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [trips, setTrips] = useState([])
+
+  const activeStartedJob = !canManage ? trips.find(t => (t.status || '').toUpperCase() === 'STARTED') : null
+  const hasActiveStartedJob = !!activeStartedJob
+  const [drivers, setDrivers] = useState([])
+  const [vehicles, setVehicles] = useState([])
+  const [allServices, setAllServices] = useState([])
+  const [allIntervals, setAllIntervals] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [busyId, setBusyId] = useState(null)
+  const [banner, setBanner] = useState(null) // { type: 'success'|'error', text }
+
+  const [showAssignModal, setShowAssignModal] = useState(false)
+  const [activeTab, setActiveTab] = useState('TRIP') // 'TRIP' | 'SERVICE' | 'FUEL'
+  const emptyForm = { driverUsername: '', vehicleRegNumber: '', origin: '', destination: '', purpose: '', scheduledDate: '', allowDriverServiceLog: true }
+  const [editingTripStatus, setEditingTripStatus] = useState('')  // tracks status of trip being edited (for UI disabling), NOT sent to backend
+  const [form, setForm] = useState(emptyForm)
+  const [assignError, setAssignError] = useState(null)
+  const [fieldErrors, setFieldErrors] = useState({})
+  // Today's date in YYYY-MM-DD (local timezone) — used as min for the scheduled date picker
+  const todayStr = new Date().toLocaleDateString('en-CA') // en-CA gives YYYY-MM-DD format
+  const [submitting, setSubmitting] = useState(false)
+  const [editingTripId, setEditingTripId] = useState(null)
+
+  const [tripToCancel, setTripToCancel] = useState(null)
+  const [cancelling, setCancelling] = useState(false)
+  const [driverModal, setDriverModal] = useState(null) // { action, trip }
+  const [selectedJobDetail, setSelectedJobDetail] = useState(null) // trip object for slide-over drawer
+
+  const [deletedDrawer, setDeletedDrawer] = useState(false)
+  const [deletedTrips, setDeletedTrips] = useState([])
+  const [loadingDeleted, setLoadingDeleted] = useState(false)
+  const [deletedDetail, setDeletedDetail] = useState(null)
+  const [restoringId, setRestoringId] = useState(null)
+  const [deleteConfirmTrip, setDeleteConfirmTrip] = useState(null)
+  const [deletingId, setDeletingId] = useState(null)
+
+  const [filterStatus, setFilterStatus] = useState('all')
+  const [filterDriver, setFilterDriver] = useState('all')
+  const [filterJobType, setFilterJobType] = useState('all')
+
+  // ── Service Log Modal (driver: log service details for a SERVICE job) ─
+  const emptyServiceLog = {
+    vehicleRegNumber: '', serviceType: '', serviceTypeDetail: '',
+    serviceDate: '', currentMileageKm: '', serviceCost: '',
+    technicianWorkshop: '', description: '', nextServiceDue: '', nextServiceMileageKm: '',
+  }
+  const [serviceLogModal, setServiceLogModal] = useState(null) // trip object when open
+  const [serviceLogForm, setServiceLogForm] = useState(emptyServiceLog)
+  const [serviceLogFile, setServiceLogFile] = useState(null)
+  const [serviceLogSubmitting, setServiceLogSubmitting] = useState(false)
+  const [serviceLogError, setServiceLogError] = useState(null)
+  const [vehicleCurrentMileage, setVehicleCurrentMileage] = useState(null) // fetched on modal open
+  const [pendingDetailModal, setPendingDetailModal] = useState(null) // service record object when viewing details
+  const [expandedServices, setExpandedServices] = useState({}) // { [serviceId]: boolean }
+
+  // ── Fuel Log Modal (driver: log fuel fill-up details for a TRIP or FUEL job) ──
+  const emptyFuelLog = {
+    vehicleRegNumber: '',
+    fuelType: 'Auto Diesel',
+    liters: '',
+    costPerLiter: '',
+    totalCost: '',
+    mileage: '',
+    date: todayStr,
+  }
+  const [fuelLogModal, setFuelLogModal] = useState(null) // trip object when open
+  const [fuelLogForm, setFuelLogForm] = useState(emptyFuelLog)
+  const [fuelLogSubmitting, setFuelLogSubmitting] = useState(false)
+  const [fuelLogError, setFuelLogError] = useState(null)
+  const [fuelVehicleMileage, setFuelVehicleMileage] = useState(null)
+  const [allFuelLogs, setAllFuelLogs] = useState([])
+  const [expandedFuelLogs, setExpandedFuelLogs] = useState({})
+
+  const toggleServiceExpand = (id) => {
+    setExpandedServices(prev => ({ ...prev, [id]: !prev[id] }))
+  }
+
+  const flash = (type, text) => {
+    setBanner({ type, text })
+    setTimeout(() => setBanner(null), 4000)
+  }
+
+  const loadDeletedTrips = async () => {
+    try {
+      setLoadingDeleted(true)
+      const res = await tripAPI.getDeletedTrips()
+      setDeletedTrips(res.data?.data || [])
+    } catch (err) {
+      console.error('Failed to load deleted jobs:', err)
+      flash('error', 'Failed to load deleted jobs')
+    } finally {
+      setLoadingDeleted(false)
+    }
+  }
+
+  useEffect(() => {
+    if (deletedDrawer) {
+      loadDeletedTrips()
+    }
+  }, [deletedDrawer])
+
+  const handleDeleteTrip = async (tripId) => {
+    setDeletingId(tripId)
+    try {
+      await tripAPI.deleteTrip(tripId)
+      flash('success', 'Job deleted successfully')
+      setDeleteConfirmTrip(null)
+      loadTrips()
+    } catch (err) {
+      flash('error', err.response?.data?.message || 'Failed to delete job')
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  const handleRestoreTrip = async (tripId) => {
+    setRestoringId(tripId)
+    try {
+      await tripAPI.restoreTrip(tripId)
+      flash('success', 'Job restored successfully')
+      loadTrips()
+      if (deletedDrawer) {
+        loadDeletedTrips()
+      }
+    } catch (err) {
+      flash('error', err.response?.data?.message || 'Failed to restore job')
+    } finally {
+      setRestoringId(null)
+    }
+  }
+
+  const loadTrips = useCallback(async () => {
+    try {
+      const res = canManage ? await tripAPI.getAllTrips() : await tripAPI.getMyTrips()
+      setTrips(res.data.data || [])
+    } catch (err) {
+      console.error('Error loading jobs:', err)
+      flash('error', 'Could not load jobs')
+    } finally {
+      setLoading(false)
+    }
+  }, [canManage])
+
+  const loadFuelLogs = useCallback(async () => {
+    try {
+      const res = canManage ? await fuelAPI.getAllFuelLogs() : await fuelAPI.getMyLogs()
+      const raw = res.data?.data || []
+      computeLogsEfficiency(raw, vehicles)
+      setAllFuelLogs(raw)
+    } catch (err) {
+      console.error('Error loading fuel logs:', err)
+    }
+  }, [canManage, vehicles])
+
+  useEffect(() => {
+    loadTrips()
+    loadFuelLogs()
+    serviceAPI.getAllServices()
+      .then(res => setAllServices(res.data.data || []))
+      .catch(err => console.error('Error loading services:', err))
+    vehicleAPI.getAllVehicles()
+      .then(res => setVehicles((res.data.data || []).filter(v => !v.deleted && !v.isDeleted)))
+      .catch(err => console.error('Error loading vehicles:', err))
+
+    if (canManage) {
+      userAPI.getAllDrivers()
+        .then(res => setDrivers((res.data.data || []).filter(d => (d.accountStatus || 'ACTIVE') === 'ACTIVE')))
+        .catch(err => console.error('Error loading drivers:', err))
+      serviceAPI.getAllIntervals()
+        .then(res => setAllIntervals(res.data.data || []))
+        .catch(err => console.error('Error loading intervals:', err))
+    }
+  }, [loadTrips, loadFuelLogs, canManage])
+
+  // Lock body scroll while a modal is open
+  useEffect(() => {
+    const open = showAssignModal || !!tripToCancel || !!driverModal || !!pendingDetailModal || !!serviceLogModal || !!fuelLogModal || !!deleteConfirmTrip || deletedDrawer || !!selectedJobDetail
+    document.body.style.overflow = open ? 'hidden' : ''
+    return () => { document.body.style.overflow = '' }
+  }, [showAssignModal, tripToCancel, driverModal, pendingDetailModal, serviceLogModal, fuelLogModal, deleteConfirmTrip, deletedDrawer, selectedJobDetail])
+
+  // ── Controller: assign a job ──────────────────────────────────────────
+  const handleAssign = async (e) => {
+    e.preventDefault()
+    setAssignError(null)
+    const errors = {}
+
+    if (!form.driverUsername) {
+      errors.driverUsername = 'Please select a driver'
+    }
+    if (!form.vehicleRegNumber) {
+      errors.vehicleRegNumber = 'Please select a vehicle'
+    }
+    if (!form.destination.trim()) {
+      errors.destination = activeTab === 'SERVICE'
+        ? 'Please enter the service center or location'
+        : activeTab === 'FUEL'
+          ? 'Please enter the fuel station or location'
+          : 'Please enter the destination'
+    }
+    if (!form.scheduledDate) {
+      errors.scheduledDate = 'Please select a scheduled date'
+    } else if (form.scheduledDate < todayStr && editingTripStatus !== 'STARTED') {
+      errors.scheduledDate = 'Scheduled date cannot be in the past'
+    }
+    if (activeTab === 'SERVICE' && !form.purpose) {
+      errors.purpose = 'Please select a service description'
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors)
+      const errorList = Object.values(errors)
+      setAssignError(errorList.length === 1 ? errorList[0] : 'Please fill in all required fields marked with * before assigning.')
+      return
+    }
+
+    setFieldErrors({})
+    setSubmitting(true)
+    try {
+      const prefix = activeTab === 'SERVICE' ? '[Service] ' : activeTab === 'FUEL' ? '[Fuel] ' : '[Trip] '
+      const accessTag = (activeTab === 'SERVICE' && form.allowDriverServiceLog) ? '[Access:YES]' : (activeTab === 'SERVICE' ? '[Access:NO]' : '')
+      const finalPurpose = `${prefix}${accessTag ? accessTag + ' ' : ''}${(form.purpose || '').trim()}`.trim()
+
+      // Only send fields that exist in the backend TripDto.
+      // Do NOT send `allowDriverServiceLog` (not a backend field — embedded in purpose string)
+      // Do NOT send `status` (backend controls status transitions; empty string breaks enum deserialization)
+      const payload = {
+        driverUsername: form.driverUsername,
+        vehicleRegNumber: form.vehicleRegNumber,
+        origin: form.origin || null,
+        destination: form.destination,
+        purpose: finalPurpose,
+        scheduledDate: form.scheduledDate || null,
+      }
+
+      if (editingTripId) {
+        await tripAPI.updateTrip(editingTripId, payload)
+        flash('success', `${activeTab === 'SERVICE' ? 'Service' : activeTab === 'FUEL' ? 'Fuel' : 'Trip'} job updated successfully`)
+      } else {
+        await tripAPI.assignTrip(payload)
+        flash('success', `${activeTab === 'SERVICE' ? 'Service' : activeTab === 'FUEL' ? 'Fuel' : 'Trip'} job assigned successfully`)
+      }
+      setForm(emptyForm)
+      setEditingTripId(null)
+      setEditingTripStatus('')
+      setAssignError(null)
+      setFieldErrors({})
+      setShowAssignModal(false)
+      loadTrips()
+    } catch (err) {
+      const msg = err.response?.data?.message || `Failed to ${editingTripId ? 'update' : 'assign'} job`
+      setAssignError(msg)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const closeAssignModal = () => {
+    if (!submitting) {
+      setShowAssignModal(false)
+      setForm(emptyForm)
+      setEditingTripId(null)
+      setEditingTripStatus('')
+      setAssignError(null)
+      setFieldErrors({})
+    }
+  }
+
+  // When a vehicle is selected in the modal, auto-fill the assigned driver (but allow override)
+  const handleVehicleChange = (regNo) => {
+    const selected = vehicles.find(v => v.registrationNo === regNo)
+    setForm(prev => ({
+      ...prev,
+      vehicleRegNumber: regNo,
+      // Auto-fill driver only if the vehicle has one and the driver field is currently empty OR
+      // was previously auto-filled (i.e. no manual override)
+      driverUsername: selected?.driverUsername || prev.driverUsername
+    }))
+  }
+
+  const confirmCancel = async () => {
+    if (!tripToCancel) return
+    setCancelling(true)
+    try {
+      await tripAPI.cancelTrip(tripToCancel.id)
+      flash('success', 'Job cancelled')
+      setTripToCancel(null)
+      loadTrips()
+    } catch (err) {
+      flash('error', err.response?.data?.message || 'Failed to cancel job')
+    } finally {
+      setCancelling(false)
+    }
+  }
+
+  // ── Driver: act on a job (confirmed via TripActionModal) ───────────────
+  const runDriverAction = async (reason) => {
+    if (!driverModal) return
+    const { action, trip } = driverModal
+    setBusyId(trip.id)
+    try {
+      if (action === 'start') { await tripAPI.startTrip(trip.id); flash('success', 'Job accepted successfully!') }
+      if (action === 'complete') { await tripAPI.completeTrip(trip.id); flash('success', 'Job completed') }
+      if (action === 'decline') { await tripAPI.declineTrip(trip.id, reason || ''); flash('success', 'Job declined') }
+      setDriverModal(null)
+      loadTrips()
+    } catch (err) {
+      flash('error', err.response?.data?.message || 'Action failed')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  // ── Driver: open service log modal for a SERVICE job ───────────────────
+  const openServiceLog = async (trip) => {
+    const todayStr = (() => {
+      const d = new Date()
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+    })()
+    // Derive service type from purpose: e.g. "[Service] Oil Change" → 'OIL_CHANGE'
+    const cleanPurpose = getCleanPurpose(trip.purpose)
+    const matchedType = SERVICE_TYPES.find(t => t.label.toLowerCase() === cleanPurpose.toLowerCase())
+
+    // Find vehicle from vehicles state array or API to pre-fill current mileage
+    const cleanReg = (trip.vehicleRegNumber || '').replace(/^VEH-/i, '').trim()
+    const targetVeh = vehicles.find(v => (v.registrationNo || '').replace(/^VEH-/i, '').toUpperCase() === cleanReg.toUpperCase())
+    let currentKm = targetVeh?.currentMileageKm ?? targetVeh?.initialMileageKm ?? null
+
+    if (currentKm == null && cleanReg) {
+      try {
+        const vRes = await vehicleAPI.getVehicleByRegNo(cleanReg)
+        const v = vRes?.data?.data || vRes?.data
+        if (v) {
+          currentKm = v.currentMileageKm ?? v.initialMileageKm ?? null
+        }
+      } catch {
+        try {
+          const vRes = await vehicleAPI.getMyVehicle()
+          const v = vRes?.data?.data || vRes?.data
+          if (v && (v.registrationNo || '').replace(/^VEH-/i, '').toUpperCase() === cleanReg.toUpperCase()) {
+            currentKm = v.currentMileageKm ?? v.initialMileageKm ?? null
+          }
+        } catch { /* non-fatal */ }
+      }
+    }
+
+    // Fallback: check recent fuel logs or service records for the vehicle's odometer
+    if (currentKm == null && cleanReg) {
+      const vFuelLogs = (allFuelLogs || []).filter(l => (l.vehicleRegNumber || '').replace(/^VEH-/i, '').toUpperCase() === cleanReg.toUpperCase() && Number(l.mileage) > 0)
+      if (vFuelLogs.length > 0) {
+        const maxFuelMil = Math.max(...vFuelLogs.map(l => Number(l.mileage) || 0))
+        if (maxFuelMil > 0) currentKm = maxFuelMil
+      }
+      const vServices = (allServices || []).filter(s => (s.vehicleRegNumber || '').replace(/^VEH-/i, '').toUpperCase() === cleanReg.toUpperCase() && Number(s.currentMileageKm) > 0)
+      if (vServices.length > 0) {
+        const maxServMil = Math.max(...vServices.map(s => Number(s.currentMileageKm) || 0))
+        if (maxServMil > (currentKm || 0)) currentKm = maxServMil
+      }
+    }
+
+    let prefillMileage = currentKm != null ? String(currentKm) : ''
+
+    setVehicleCurrentMileage(currentKm)
+    setServiceLogForm({
+      ...emptyServiceLog,
+      vehicleRegNumber: trip.vehicleRegNumber || '',
+      serviceType: matchedType ? matchedType.value : '',
+      serviceDate: todayStr,
+      driverUsername: trip.driverUsername || user?.userName || '',
+      currentMileageKm: prefillMileage,
+    })
+    setServiceLogFile(null)
+    setServiceLogError(null)
+    setServiceLogModal(trip)
+  }
+
+  const closeServiceLog = () => {
+    if (serviceLogSubmitting) return
+    setServiceLogModal(null)
+    setServiceLogForm(emptyServiceLog)
+    setServiceLogFile(null)
+    setServiceLogError(null)
+  }
+
+  // ── Driver: open service log modal for editing an existing PENDING record ─
+  const openEditServiceLog = (pendingRecord, trip) => {
+    setServiceLogForm({
+      id: pendingRecord.id,
+      vehicleRegNumber: pendingRecord.vehicleRegNumber || '',
+      serviceType: pendingRecord.serviceType || '',
+      serviceTypeDetail: pendingRecord.serviceTypeDetail || '',
+      serviceDate: pendingRecord.serviceDate ? pendingRecord.serviceDate.split('T')[0] : '',
+      currentMileageKm: pendingRecord.currentMileageKm ? String(pendingRecord.currentMileageKm) : '',
+      serviceCost: pendingRecord.serviceCost ? String(pendingRecord.serviceCost) : '',
+      technicianWorkshop: pendingRecord.technicianWorkshop || '',
+      description: pendingRecord.description || '',
+      nextServiceDue: pendingRecord.nextServiceDue ? pendingRecord.nextServiceDue.split('T')[0] : '',
+      nextServiceMileageKm: pendingRecord.nextServiceMileageKm ? String(pendingRecord.nextServiceMileageKm) : '',
+      driverUsername: pendingRecord.createdBy || user?.userName || '',
+    })
+    setVehicleCurrentMileage(pendingRecord.currentMileageKm || null)
+    setServiceLogFile(null)
+    setServiceLogError(null)
+    setServiceLogModal(trip || { id: pendingRecord.id, vehicleRegNumber: pendingRecord.vehicleRegNumber })
+  }
+
+  const handleServiceLogSubmit = async (e) => {
+    e.preventDefault()
+    if (!serviceLogForm.serviceType) { setServiceLogError('Service type is required.'); return }
+    if (!serviceLogForm.serviceDate) { setServiceLogError('Service date is required.'); return }
+    if (!serviceLogForm.currentMileageKm) { setServiceLogError('Current mileage is required.'); return }
+    if (!serviceLogForm.serviceCost) { setServiceLogError('Service cost is required.'); return }
+    if (!serviceLogForm.technicianWorkshop) { setServiceLogError('Technician / Workshop is required.'); return }
+    setServiceLogSubmitting(true)
+    setServiceLogError(null)
+    try {
+      const cleanDate = (d) => {
+        if (!d || !String(d).trim()) return null
+        return String(d).split('T')[0]
+      }
+
+      const payload = {
+        vehicleRegNumber: (serviceLogForm.vehicleRegNumber || '').replace(/^VEH-/i, '').trim(),
+        serviceType: serviceLogForm.serviceType,
+        serviceTypeDetail: serviceLogForm.serviceType === 'OTHER' ? (serviceLogForm.serviceTypeDetail || null) : null,
+        serviceDate: cleanDate(serviceLogForm.serviceDate),
+        currentMileageKm: Number(serviceLogForm.currentMileageKm),
+        serviceCost: Number(serviceLogForm.serviceCost),
+        technicianWorkshop: (serviceLogForm.technicianWorkshop || '').trim(),
+        description: serviceLogForm.description && serviceLogForm.description.trim() ? serviceLogForm.description.trim() : null,
+        nextServiceDue: cleanDate(serviceLogForm.nextServiceDue),
+        nextServiceMileageKm: serviceLogForm.nextServiceMileageKm ? Number(serviceLogForm.nextServiceMileageKm) : null,
+        driverUsername: serviceLogForm.driverUsername || user?.userName || null,
+        tripId: serviceLogModal?.id || null,
+        status: canManage ? 'APPROVED' : 'PENDING', // Controller submissions are auto-approved (APPROVED), driver submissions require approval (PENDING)
+      }
+
+      let res;
+      if (serviceLogForm.id) {
+        res = await serviceAPI.updateService(serviceLogForm.id, payload)
+      } else {
+        res = await serviceAPI.createService(payload)
+      }
+
+      // Upload attachment if provided
+      if (serviceLogFile && (res.data?.data?.id || serviceLogForm.id)) {
+        try { await serviceAPI.uploadAttachment(serviceLogForm.id || res.data.data.id, serviceLogFile) } catch { /* non-fatal */ }
+      }
+
+      // Notify controllers of new submission or update
+      // Notify controllers of new submission or update
+      try {
+        const isUpdate = !!serviceLogForm.id
+        const approvalMsg = isUpdate
+          ? `Driver ${user?.userName} updated the pending service details for ${payload.vehicleRegNumber} (${payload.serviceType}) — awaiting your approval.`
+          : `Driver ${user?.userName} logged service details for ${payload.vehicleRegNumber} (${payload.serviceType}) from Job #${serviceLogModal?.id} — awaiting your approval.`
+
+        await notificationAPI.create({ vehicleRegNumber: `VEH-${payload.vehicleRegNumber}`, message: approvalMsg, type: 'INFO' })
+      } catch { /* non-fatal */ }
+
+      // Automatically complete the job if submitted from an assigned/started job
+      if (serviceLogModal?.id && (serviceLogModal.status === 'STARTED' || serviceLogModal.status === 'ASSIGNED')) {
+        try {
+          await tripAPI.completeTrip(serviceLogModal.id)
+        } catch (err) {
+          console.error("Auto-complete job error:", err)
+        }
+      }
+
+      closeServiceLog()
+      flash('success', serviceLogForm.id ? 'Pending service details updated & controller notified!' : 'Service details submitted & job completed!')
+      loadTrips()
+      serviceAPI.getAllServices()
+        .then(sRes => setAllServices(sRes.data.data || []))
+        .catch(() => { })
+    } catch (err) {
+      setServiceLogError(err.response?.data?.message || JSON.stringify(err.response?.data) || 'Failed to submit service details.')
+    } finally {
+      setServiceLogSubmitting(false)
+    }
+  }
+
+  // ── Driver: open fuel log modal for a TRIP or FUEL job ─────────────────
+  const openFuelLog = async (trip) => {
+    const tripDate = trip.scheduledDate ? trip.scheduledDate.split('T')[0] : new Date().toISOString().split('T')[0]
+    const cleanReg = (trip.vehicleRegNumber || '').replace(/^VEH-/i, '').trim()
+    const targetVeh = vehicles.find(v => (v.registrationNo || '').replace(/^VEH-/i, '').toUpperCase() === cleanReg.toUpperCase())
+    let currentKm = targetVeh?.currentMileageKm ?? targetVeh?.initialMileageKm ?? null
+    let fuelType = targetVeh?.fuelType ? formatFuelType(targetVeh.fuelType) : 'Auto Diesel'
+
+    if (currentKm == null && cleanReg) {
+      try {
+        const vRes = await vehicleAPI.getVehicleByRegNo(cleanReg)
+        const v = vRes?.data?.data || vRes?.data
+        if (v) {
+          currentKm = v.currentMileageKm ?? v.initialMileageKm ?? null
+          if (v.fuelType) fuelType = formatFuelType(v.fuelType)
+        }
+      } catch {
+        try {
+          const vRes = await vehicleAPI.getMyVehicle()
+          const v = vRes?.data?.data || vRes?.data
+          if (v && (v.registrationNo || '').replace(/^VEH-/i, '').toUpperCase() === cleanReg.toUpperCase()) {
+            currentKm = v.currentMileageKm ?? v.initialMileageKm ?? null
+            if (v.fuelType) fuelType = formatFuelType(v.fuelType)
+          }
+        } catch { /* non-fatal */ }
+      }
+    }
+
+    if (currentKm == null && cleanReg) {
+      const vFuelLogs = (allFuelLogs || []).filter(l => (l.vehicleRegNumber || '').replace(/^VEH-/i, '').toUpperCase() === cleanReg.toUpperCase() && Number(l.mileage) > 0)
+      if (vFuelLogs.length > 0) {
+        const maxFuelMil = Math.max(...vFuelLogs.map(l => Number(l.mileage) || 0))
+        if (maxFuelMil > 0) currentKm = maxFuelMil
+      }
+    }
+
+    setFuelVehicleMileage(currentKm)
+    setFuelLogForm({
+      vehicleRegNumber: trip.vehicleRegNumber || '',
+      fuelType: fuelType || 'Auto Diesel',
+      liters: '',
+      costPerLiter: '',
+      totalCost: '',
+      mileage: currentKm != null ? String(currentKm) : '',
+      date: tripDate,
+    })
+    setFuelLogError(null)
+    setFuelLogModal(trip)
+  }
+
+  const closeFuelLog = () => {
+    if (fuelLogSubmitting) return
+    setFuelLogModal(null)
+    setFuelLogForm(emptyFuelLog)
+    setFuelLogError(null)
+  }
+
+  // ── Controller / Driver: open fuel log modal for editing an existing record ──
+  const openEditFuelLog = (log, trip) => {
+    setFuelVehicleMileage(log.mileage || null)
+    setFuelLogForm({
+      id: log.id,
+      vehicleRegNumber: log.vehicleRegNumber || '',
+      fuelType: formatFuelType(log.fuelType) || 'Auto Diesel',
+      liters: log.liters ? String(log.liters) : '',
+      costPerLiter: log.costPerLiter ? String(log.costPerLiter) : '',
+      totalCost: log.totalCost ? String(log.totalCost) : '',
+      mileage: log.mileage ? String(log.mileage) : '',
+      date: log.date ? log.date.split('T')[0] : '',
+    })
+    setFuelLogError(null)
+    setFuelLogModal(trip || { id: log.id, vehicleRegNumber: log.vehicleRegNumber })
+  }
+
+  const handleFuelLogSubmit = async (e) => {
+    e.preventDefault()
+    if (!fuelLogForm.liters || parseFloat(fuelLogForm.liters) <= 0) {
+      setFuelLogError('Fuel quantity (liters) is required.')
+      return
+    }
+    if (!fuelLogForm.costPerLiter || parseFloat(fuelLogForm.costPerLiter) <= 0) {
+      setFuelLogError('Cost per liter is required.')
+      return
+    }
+    if (!fuelLogForm.mileage || parseFloat(fuelLogForm.mileage) <= 0) {
+      setFuelLogError('Current mileage is required.')
+      return
+    }
+    if (!fuelLogForm.date) {
+      setFuelLogError('Date is required.')
+      return
+    }
+
+    setFuelLogSubmitting(true)
+    setFuelLogError(null)
+    try {
+      const liters = parseFloat(fuelLogForm.liters)
+      const costPerLiter = parseFloat(fuelLogForm.costPerLiter)
+      const totalCost = fuelLogForm.totalCost ? parseFloat(fuelLogForm.totalCost) : (liters * costPerLiter)
+
+      const payload = {
+        vehicleRegNumber: (fuelLogForm.vehicleRegNumber || '').replace(/^VEH-/i, '').trim(),
+        fuelType: fuelLogForm.fuelType,
+        liters,
+        costPerLiter,
+        totalCost,
+        mileage: parseFloat(fuelLogForm.mileage),
+        date: fuelLogForm.date,
+        tripId: fuelLogModal?.id || null,
+        status: canManage ? 'APPROVED' : 'PENDING',
+      }
+
+      if (fuelLogForm.id) {
+        if (canManage) {
+          await fuelAPI.controllerUpdateLog(fuelLogForm.id, payload)
+          try { await fuelAPI.approveLog(fuelLogForm.id) } catch { /* non-fatal */ }
+        } else {
+          await fuelAPI.updateMyLog(fuelLogForm.id, payload)
+        }
+        flash('success', canManage ? 'Fuel record reviewed, updated & approved!' : 'Fuel record updated successfully!')
+      } else {
+        if (canManage) {
+          await fuelAPI.controllerAddLog(payload)
+        } else {
+          await fuelAPI.addFuelLog(payload)
+        }
+
+        // Notify controllers of new fuel submission
+        try {
+          const approvalMsg = `Driver ${user?.userName || 'Driver'} recorded fuel fill-up (${liters}L, Rs. ${totalCost.toLocaleString()}) for ${payload.vehicleRegNumber}${fuelLogModal?.id ? ` for Job #${fuelLogModal.id}` : ''} — awaiting your approval.`
+          await notificationAPI.create({ vehicleRegNumber: `VEH-${payload.vehicleRegNumber}`, message: approvalMsg, type: 'INFO' })
+        } catch { /* non-fatal */ }
+
+        // Automatically complete the job if this was a FUEL job assignment or completion
+        const isFuelJob = getJobType(fuelLogModal?.purpose) === 'FUEL'
+        const shouldAutoComplete = fuelLogModal?.id && (fuelLogModal.status === 'STARTED' || fuelLogModal.status === 'ASSIGNED') && (isFuelJob || fuelLogModal._completeOnSubmit)
+
+        if (shouldAutoComplete) {
+          try {
+            await tripAPI.completeTrip(fuelLogModal.id)
+          } catch (err) {
+            console.error("Auto-complete fuel job error:", err)
+          }
+        }
+
+        flash('success', shouldAutoComplete
+          ? `Fuel details submitted & Job #${fuelLogModal.id} completed! Awaiting controller approval.`
+          : `Fuel log (${liters}L) recorded successfully for ${fuelLogForm.vehicleRegNumber}! Awaiting controller approval.`)
+      }
+
+      closeFuelLog()
+      await loadFuelLogs()
+      loadTrips()
+    } catch (err) {
+      setFuelLogError(err.response?.data?.message || 'Failed to submit fuel log. Please try again.')
+    } finally {
+      setFuelLogSubmitting(false)
+    }
+  }
+
+  // ── Controller: Approve / Reject / Delete Fuel Record from Job Management ──
+  const handleApproveFuelInTrips = async (fuelLogId) => {
+    try {
+      setBusyId(fuelLogId)
+      await fuelAPI.approveLog(fuelLogId)
+      flash('success', 'Fuel record approved successfully!')
+      await loadFuelLogs()
+      loadTrips()
+    } catch (err) {
+      flash('error', err.response?.data?.message || 'Failed to approve fuel record')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const handleRejectFuelInTrips = async (fuelLogId) => {
+    try {
+      setBusyId(fuelLogId)
+      await fuelAPI.rejectLog(fuelLogId)
+      flash('error', 'Fuel record rejected')
+      await loadFuelLogs()
+      loadTrips()
+    } catch (err) {
+      flash('error', err.response?.data?.message || 'Failed to reject fuel record')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const handleDeleteFuelInTrips = async (fuelLogId) => {
+    try {
+      setBusyId(fuelLogId)
+      await fuelAPI.controllerDeleteLog(fuelLogId)
+      flash('success', 'Fuel record deleted')
+      await loadFuelLogs()
+      loadTrips()
+    } catch (err) {
+      flash('error', err.response?.data?.message || 'Failed to delete fuel record')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  // ── Controller: Approve / Reject / Delete Service Record from Job Management ──
+  const handleApproveServiceInTrips = async (serviceId) => {
+    try {
+      setBusyId(serviceId)
+      await serviceAPI.approveService(serviceId)
+      flash('success', 'Service record approved successfully!')
+      const res = await serviceAPI.getAllServices()
+      setAllServices(res.data.data || [])
+      setPendingDetailModal(null)
+      loadTrips()
+    } catch (err) {
+      flash('error', err.response?.data?.message || 'Failed to approve service record')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const handleRejectServiceInTrips = async (serviceId) => {
+    try {
+      setBusyId(serviceId)
+      await serviceAPI.rejectService(serviceId)
+      flash('error', 'Service record rejected successfully')
+      const res = await serviceAPI.getAllServices()
+      setAllServices(res.data.data || [])
+      setPendingDetailModal(null)
+      loadTrips()
+    } catch (err) {
+      flash('error', err.response?.data?.message || 'Failed to reject service record')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const handleDeleteServiceInTrips = async (serviceId) => {
+    try {
+      setBusyId(serviceId)
+      await serviceAPI.deleteService(serviceId)
+      flash('success', 'Service record deleted')
+      const res = await serviceAPI.getAllServices()
+      setAllServices(res.data.data || [])
+      setPendingDetailModal(null)
+      loadTrips()
+    } catch (err) {
+      flash('error', err.response?.data?.message || 'Failed to delete service record')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const handleViewAttachmentInTrips = async (record) => {
+    try {
+      const res = await serviceAPI.getAttachmentBlob(record.id)
+      const path = record.attachmentPath || ''
+      const isPdf = path.toLowerCase().endsWith('.pdf')
+      const blob = new Blob([res.data], { type: isPdf ? 'application/pdf' : 'image/jpeg' })
+      const url = URL.createObjectURL(blob)
+      window.open(url, '_blank')
+    } catch (err) {
+      flash('error', 'Failed to load attachment. File may not exist.')
+    }
+  }
+
+  // ── Derived data ────────────────────────────────────────────────────────
+  const getJobServices = useCallback((trip) => {
+    if (!trip) return []
+    return (allServices || []).filter(serv => isJobServiceRecord(serv, trip))
+  }, [allServices])
+
+  const getJobFuelLogs = useCallback((trip) => {
+    if (!trip) return []
+    return (allFuelLogs || []).filter(log => isJobFuelLog(log, trip))
+  }, [allFuelLogs])
+
+  const getJobPendingInfo = useCallback((trip) => {
+    const jobServices = getJobServices(trip)
+    const jobFuelLogs = getJobFuelLogs(trip)
+    const pendingServices = jobServices.filter(s => s && s.status === 'PENDING')
+    const pendingFuel = jobFuelLogs.filter(f => f && f.status === 'PENDING')
+    const totalPending = pendingServices.length + pendingFuel.length
+    return {
+      jobServices,
+      jobFuelLogs,
+      pendingServices,
+      pendingFuel,
+      totalPending,
+      hasPending: totalPending > 0
+    }
+  }, [getJobServices, getJobFuelLogs])
+
+  const pendingReviewJobsCount = trips.filter(t => getJobPendingInfo(t).hasPending).length
+
+  const stat = {
+    total: trips.length,
+    assigned: trips.filter(t => up(t.status) === 'ASSIGNED').length,
+    started: trips.filter(t => up(t.status) === 'STARTED').length,
+    completed: trips.filter(t => up(t.status) === 'COMPLETED').length,
+  }
+  const uniqueDrivers = [...new Set(trips.map(t => t.driverUsername).filter(Boolean))]
+  const filteredTrips = trips.filter(t => {
+    if (filterStatus === 'NEEDS_REVIEW') {
+      if (!getJobPendingInfo(t).hasPending) return false
+    } else if (filterStatus !== 'all' && up(t.status) !== filterStatus) {
+      return false
+    }
+    if (canManage && filterDriver !== 'all' && t.driverUsername !== filterDriver) return false
+    if (filterJobType !== 'all' && getJobType(t.purpose) !== filterJobType) return false
+    return true
+  }).sort((a, b) => {
+    // If both are COMPLETED, sort newly completed jobs first
+    if (a.status === 'COMPLETED' && b.status === 'COMPLETED') {
+      const aComp = a.completedAt ? new Date(a.completedAt).getTime() : (a.updatedAt ? new Date(a.updatedAt).getTime() : (a.createdAt ? new Date(a.createdAt).getTime() : 0))
+      const bComp = b.completedAt ? new Date(b.completedAt).getTime() : (b.updatedAt ? new Date(b.updatedAt).getTime() : (b.createdAt ? new Date(b.createdAt).getTime() : 0))
+      if (bComp !== aComp) return bComp - aComp
+    }
+    // Overall sort: latest event timestamp first (completedAt || startedAt || updatedAt || createdAt || scheduledDate)
+    const aLatest = Math.max(
+      a.completedAt ? new Date(a.completedAt).getTime() : 0,
+      a.startedAt ? new Date(a.startedAt).getTime() : 0,
+      a.updatedAt ? new Date(a.updatedAt).getTime() : 0,
+      a.createdAt ? new Date(a.createdAt).getTime() : 0,
+      a.scheduledDate ? new Date(a.scheduledDate).getTime() : 0
+    )
+    const bLatest = Math.max(
+      b.completedAt ? new Date(b.completedAt).getTime() : 0,
+      b.startedAt ? new Date(b.startedAt).getTime() : 0,
+      b.updatedAt ? new Date(b.updatedAt).getTime() : 0,
+      b.createdAt ? new Date(b.createdAt).getTime() : 0,
+      b.scheduledDate ? new Date(b.scheduledDate).getTime() : 0
+    )
+    return bLatest - aLatest
+  })
+
+  // ── Style helpers (match Fuel Management) ───────────────────────────────
+  const card = { background: D.surface, borderRadius: 24, border: `1px solid ${D.border}`, boxShadow: '0 4px 24px rgba(0,0,0,0.25)', overflow: 'hidden' }
+  const inputStyle = { width: '100%', padding: '14px 18px', borderRadius: 16, border: `1px solid ${D.inputBorder}`, fontSize: '0.95rem', color: D.text, background: D.inputBg, outline: 'none', transition: 'all 0.2s', fontFamily: 'inherit' }
+  const labelStyle = { display: 'block', fontSize: '0.75rem', fontWeight: 800, color: D.textSub, marginBottom: 10, letterSpacing: '0.08em', textTransform: 'uppercase' }
+  const filterStyle = { ...inputStyle, appearance: 'none', paddingRight: 32, cursor: 'pointer', width: '100%' }
+  const onFocus = e => { e.target.style.borderColor = D.purple; e.target.style.boxShadow = `0 0 0 4px ${D.purpleDim}` }
+  const onBlur = e => { e.target.style.borderColor = D.inputBorder; e.target.style.boxShadow = 'none' }
+
+  const statCards = [
+    { label: 'Total Jobs', value: stat.total, icon: <ClipboardList size={24} />, color: D.blue, bg: D.blueDim },
+    { label: 'Awaiting Response', value: stat.assigned, icon: <Clock size={24} />, color: D.gold, bg: D.goldDim },
+    { label: 'In Progress', value: stat.started, icon: <Navigation size={24} />, color: D.indigo, bg: D.indigoDim },
+    { label: 'Completed', value: stat.completed, icon: <CheckCircle size={24} />, color: D.green, bg: D.greenDim },
+  ]
+
+  // Find selected vehicle and determine overdue services
+  const selectedVehicle = vehicles.find(v => v.registrationNo === form.vehicleRegNumber)
+  const sortedServiceTypes = [...SERVICE_TYPES].map(type => {
+    const isOverdue = isServiceOverdueForVehicle(selectedVehicle, type.value, allServices, allIntervals)
+    return { ...type, isOverdue }
+  }).sort((a, b) => (b.isOverdue ? 1 : 0) - (a.isOverdue ? 1 : 0))
+
+  if (loading) return (
+    <div className="app-shell" style={{ background: D.bg, minHeight: '100vh' }}>
+      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <div className="main-content" style={{ background: D.bg }}>
+        <Topbar title="Jobs" subtitle={canManage ? 'Home / Job Assignments' : 'Home / My Jobs'} onMenuToggle={() => setSidebarOpen(o => !o)} />
+        <div className="page-body" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, padding: 80, color: D.textSub }}>
+          <Loader2 size={20} className="spin" /> Loading jobs…
+        </div>
+      </div>
+    </div>
+  )
+
+  return (
+    <div className="app-shell" style={{ background: D.bg, minHeight: '100vh' }}>
+      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <div className="main-content" style={{ background: D.bg }}>
+        <Topbar title="Jobs" subtitle={canManage ? 'Home / Job Assignments' : 'Home / My Jobs'} onMenuToggle={() => setSidebarOpen(o => !o)} />
+        <div className="page-body">
+
+          {banner && (
+            <div style={{
+              marginBottom: 20, padding: '12px 18px', borderRadius: 14, fontWeight: 600, fontSize: '0.85rem',
+              background: banner.type === 'success' ? D.greenDim : D.redDim,
+              color: banner.type === 'success' ? D.green : D.red,
+              border: `1px solid ${banner.type === 'success' ? D.green : D.red}40`,
+            }}>{banner.text}</div>
+          )}
+
+          {/* ── Hero Banner ───────────────────────────────────────────── */}
+          <div style={{
+            background: 'linear-gradient(135deg, var(--primary-dark) 0%, var(--primary) 45%, var(--primary-light) 100%)',
+            borderRadius: 28, padding: '40px', marginBottom: 32, position: 'relative', overflow: 'hidden',
+            boxShadow: isDark
+              ? '0 20px 60px rgba(0,0,0,0.7), 0 0 80px var(--primary-glow), inset 0 1px 0 rgba(255,255,255,0.04)'
+              : '0 16px 48px rgba(0,0,0,0.15), 0 8px 32px var(--primary-glow)',
+            border: '1px solid var(--border-strong)',
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16,
+          }}>
+            {[['80%', '-20px', '220px', 'rgba(255,255,255,0.02)'], ['20%', '60%', '150px', 'rgba(255,255,255,0.02)'], ['55%', '80%', '100px', 'rgba(255,255,255,0.01)']].map(([t, l, s, bg], i) => (
+              <div key={i} style={{ position: 'absolute', top: t, left: l, width: s, height: s, borderRadius: '50%', background: bg, pointerEvents: 'none' }} />
+            ))}
+            {isDark && <div style={{ position: 'absolute', top: '50%', left: '30%', width: 300, height: 300, borderRadius: '50%', background: 'radial-gradient(circle, var(--primary-light) 0%, transparent 70%)', transform: 'translateY(-50%)', pointerEvents: 'none' }} />}
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 20 }}>
+              <div>
+                <h1 style={{ margin: 0, fontSize: '1.8rem', fontWeight: 800, color: '#fff', letterSpacing: '-0.02em', fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+                  {canManage ? 'Fleet Job Management' : 'My Assigned Jobs'}
+                </h1>
+                <p style={{ margin: '4px 0 0', color: '#f8fafc', fontSize: '0.9rem', fontWeight: 500 }}>
+                  {canManage ? 'Assign jobs & vehicles, track driver progress' : 'Start, decline or complete the jobs assigned to you'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* ── Quick Action Cards (Controller only) ──────────────────── */}
+          {canManage && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 24, marginBottom: 36 }}>
+              {[
+                { type: 'TRIP', label: 'Trip Assignment', desc: 'Assign driver and vehicle for transport trips', icon: <Navigation size={22} />, color: D.blue, bg: D.blueDim },
+                { type: 'SERVICE', label: 'Service Assignment', desc: 'Dispatch driver for maintenance & services', icon: <Wrench size={22} />, color: D.gold, bg: D.goldDim },
+                { type: 'FUEL', label: 'Fuel Assignment', desc: 'Assign driver to fill up gas before trip or when low', icon: <Fuel size={22} />, color: D.green, bg: D.greenDim },
+              ].map(act => (
+                <div key={act.type} onClick={() => { setActiveTab(act.type); setForm(emptyForm); setEditingTripId(null); setEditingTripStatus(''); setAssignError(null); setFieldErrors({}); setShowAssignModal(true) }}
+                  style={{
+                    background: D.surface, borderRadius: 24, border: `1px solid ${D.border}`, padding: '24px',
+                    display: 'flex', alignItems: 'center', gap: 20, cursor: 'pointer', transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+                    boxShadow: '0 4px 20px rgba(0,0,0,0.15)',
+                  }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.transform = 'translateY(-4px)';
+                    e.currentTarget.style.borderColor = act.color + '60';
+                    e.currentTarget.style.boxShadow = `0 12px 28px ${act.color}15`;
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.transform = 'translateY(0)';
+                    e.currentTarget.style.borderColor = D.border;
+                    e.currentTarget.style.boxShadow = '0 4px 20px rgba(0,0,0,0.15)';
+                  }}>
+                  <div style={{ width: 48, height: 48, borderRadius: 16, background: act.bg, color: act.color, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, border: `1px solid ${act.color}30` }}>
+                    {act.icon}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.92rem', fontWeight: 800, color: D.text, marginBottom: 4 }}>{act.label}</div>
+                    <div style={{ fontSize: '0.78rem', color: D.textSub, lineHeight: 1.4 }}>{act.desc}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+
+          {/* ── Active in-progress job notice for driver ── */}
+          {!canManage && hasActiveStartedJob && (
+            <div style={{
+              marginBottom: 20, padding: '14px 20px', borderRadius: 16,
+              background: 'rgba(56,189,248,0.08)', border: '1.5px solid rgba(56,189,248,0.28)',
+              display: 'flex', alignItems: 'center', gap: 14, color: '#38bdf8',
+              animation: 'fadeIn 0.25s ease', boxShadow: '0 4px 16px rgba(56,189,248,0.1)'
+            }}>
+              <div style={{ width: 34, height: 34, borderRadius: 10, background: 'rgba(56,189,248,0.18)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <Play size={16} />
+              </div>
+              <div style={{ flex: 1, fontSize: '0.86rem', lineHeight: 1.5 }}>
+                <span style={{ fontWeight: 800 }}>Job In Progress:</span> You are currently working on the job to <strong>"{activeStartedJob.destination}"</strong> ({activeStartedJob.vehicleRegNumber}). You must complete this job before accepting other job assignments.
+              </div>
+            </div>
+          )}
+
+          {/* ── Pending Review Banner for Controllers ── */}
+          {canManage && pendingReviewJobsCount > 0 && (
+            <div style={{
+              marginBottom: 20, padding: '16px 22px', borderRadius: 18,
+              background: 'rgba(245, 158, 11, 0.09)', border: '1.5px solid rgba(245, 158, 11, 0.35)',
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+              color: '#d97706', boxShadow: '0 4px 20px rgba(245,158,11,0.1)', flexWrap: 'wrap'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <div style={{ width: 38, height: 38, borderRadius: 12, background: 'rgba(245, 158, 11, 0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <AlertTriangle size={18} color="#d97706" />
+                </div>
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: '0.92rem', color: D.text }}>
+                    {pendingReviewJobsCount} Job{pendingReviewJobsCount !== 1 ? 's' : ''} Awaiting Driver Log Review
+                  </div>
+                  <div style={{ fontSize: '0.78rem', color: D.textSub, marginTop: 2 }}>
+                    Drivers have submitted fuel or service logs for completed jobs that require your review &amp; approval.
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => setFilterStatus(filterStatus === 'NEEDS_REVIEW' ? 'all' : 'NEEDS_REVIEW')}
+                style={{
+                  padding: '9px 16px', borderRadius: 10,
+                  border: filterStatus === 'NEEDS_REVIEW' ? '1px solid #d97706' : '1px solid rgba(245,158,11,0.4)',
+                  background: filterStatus === 'NEEDS_REVIEW' ? '#d97706' : 'rgba(245,158,11,0.15)',
+                  color: filterStatus === 'NEEDS_REVIEW' ? '#fff' : '#d97706',
+                  fontSize: '0.8rem', fontWeight: 800, cursor: 'pointer',
+                  display: 'inline-flex', alignItems: 'center', gap: 6, transition: 'all 0.15s'
+                }}
+              >
+                <Filter size={13} /> {filterStatus === 'NEEDS_REVIEW' ? 'Show All Jobs' : 'Filter Needs Review'}
+              </button>
+            </div>
+          )}
+
+          {/* ── Controls & List ───────────────────────────────────────── */}
+          <div style={{ ...card, padding: 0 }}>
+            <div style={{ padding: '22px 32px', borderBottom: `1px solid ${D.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, background: D.surfaceHi, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, flexWrap: 'wrap' }}>
+                {/* Status filter */}
+                <div style={{ position: 'relative', flex: '1 1 auto', minWidth: 160 }}>
+                  <ClipboardList size={16} style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: D.blue, pointerEvents: 'none', opacity: 0.8 }} />
+                  <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} style={{ ...filterStyle, paddingLeft: 38 }} onFocus={onFocus} onBlur={onBlur}>
+                    <option value="all">All Statuses</option>
+                    {canManage && pendingReviewJobsCount > 0 && (
+                      <option value="NEEDS_REVIEW">⚠️ Needs Review ({pendingReviewJobsCount})</option>
+                    )}
+                    <option value="ASSIGNED">Assigned</option>
+                    <option value="STARTED">In Progress</option>
+                    <option value="COMPLETED">Completed</option>
+                    <option value="DECLINED">Declined</option>
+                    <option value="CANCELLED">Cancelled</option>
+                  </select>
+                  <MoreVertical size={13} style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: D.textSub }} />
+                </div>
+                {/* Job Type filter */}
+                <div style={{ position: 'relative', flex: '1 1 auto', minWidth: 160 }}>
+                  <Filter size={16} style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: D.indigo, pointerEvents: 'none', opacity: 0.8 }} />
+                  <select value={filterJobType} onChange={e => setFilterJobType(e.target.value)} style={{ ...filterStyle, paddingLeft: 38 }} onFocus={onFocus} onBlur={onBlur}>
+                    <option value="all">All Job Types</option>
+                    <option value="TRIP">Trip Assignment</option>
+                    <option value="SERVICE">Service Assignment</option>
+                    <option value="FUEL">Fuel Assignment</option>
+                  </select>
+                  <MoreVertical size={13} style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: D.textSub }} />
+                </div>
+                {/* Driver filter (controller only) */}
+                {canManage && (
+                  <div style={{ position: 'relative', flex: '1 1 auto', minWidth: 160 }}>
+                    <User size={16} style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: D.purple, pointerEvents: 'none', opacity: 0.8 }} />
+                    <select value={filterDriver} onChange={e => setFilterDriver(e.target.value)} style={{ ...filterStyle, paddingLeft: 38 }} onFocus={onFocus} onBlur={onBlur}>
+                      <option value="all">All Drivers</option>
+                      {uniqueDrivers.map(d => <option key={d} value={d}>{d}</option>)}
+                    </select>
+                    <MoreVertical size={13} style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: D.textSub }} />
+                  </div>
+                )}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                {canManage && (
+                  <button
+                    onClick={() => setDeletedDrawer(true)}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 6,
+                      padding: '10px 16px', borderRadius: 12,
+                      background: D.surface, border: `1px solid ${D.border}`,
+                      color: D.textSub, fontSize: '0.8rem', fontWeight: 800,
+                      cursor: 'pointer', transition: 'all 0.15s', whiteSpace: 'nowrap',
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.1)'; e.currentTarget.style.borderColor = 'rgba(239,68,68,0.28)'; e.currentTarget.style.color = '#f87171' }}
+                    onMouseLeave={e => { e.currentTarget.style.background = D.surface; e.currentTarget.style.borderColor = D.border; e.currentTarget.style.color = D.textSub }}
+                  >
+                    <Archive size={13} />
+                    Deleted Jobs
+                  </button>
+                )}
+                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: D.text, padding: '10px 16px', borderRadius: 12, background: D.surface, border: `1px solid ${D.border}`, whiteSpace: 'nowrap' }}>
+                  {filteredTrips.length} Job{filteredTrips.length === 1 ? '' : 's'}
+                </span>
+              </div>
+            </div>
+
+            {/* Job rows */}
+            {filteredTrips.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: 64, color: D.textSub }}>
+                <ClipboardList size={40} color={D.textFaint} style={{ marginBottom: 12 }} />
+                <div style={{ fontWeight: 700, color: D.text, marginBottom: 4 }}>No jobs found</div>
+                <div style={{ fontSize: '0.85rem' }}>{canManage ? 'Assign a job with the buttons above.' : 'You have no assigned jobs right now.'}</div>
+              </div>
+            ) : (
+              filteredTrips.map((trip, i) => {
+                const type = getJobType(trip.purpose)
+                const cleanPurpose = getCleanPurpose(trip.purpose)
+                const badge = statusBadge(trip.status)
+                const s = up(trip.status)
+                const busy = busyId === trip.id
+
+                const typeConfig = {
+                  TRIP: { icon: <Navigation size={20} color={D.blue} />, bg: D.blueDim, label: 'Trip' },
+                  SERVICE: { icon: <Wrench size={20} color={D.gold} />, bg: D.goldDim, label: 'Service' },
+                  FUEL: { icon: <Fuel size={20} color={D.green} />, bg: D.greenDim, label: 'Fuel' },
+                }[type] || { icon: <Navigation size={20} color={D.blue} />, bg: D.blueDim, label: 'Trip' }
+
+                const pendingInfo = getJobPendingInfo(trip)
+                const jobServices = pendingInfo.jobServices
+                const isAnyServiceExpanded = jobServices.length > 0 && jobServices.some(s => expandedServices[s.id])
+
+                const jobFuelLogs = pendingInfo.jobFuelLogs
+                const isAnyFuelExpanded = jobFuelLogs.length > 0 && jobFuelLogs.some(f => expandedFuelLogs[f.id])
+
+                return (
+                  <div key={trip.id}
+                    onClick={() => setSelectedJobDetail(trip)}
+                    style={{
+                      display: 'flex', flexDirection: 'column', padding: '20px 32px',
+                      borderBottom: i < filteredTrips.length - 1 ? `1px solid ${D.border}` : 'none',
+                      background: (canManage && pendingInfo.hasPending) ? 'rgba(245,158,11,0.02)' : 'transparent',
+                      borderLeft: (canManage && pendingInfo.hasPending) ? '3px solid #d97706' : '3px solid transparent',
+                      transition: 'all 0.18s', cursor: 'pointer'
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.background = (canManage && pendingInfo.hasPending) ? 'rgba(245,158,11,0.06)' : D.surfaceHi}
+                    onMouseLeave={e => e.currentTarget.style.background = (canManage && pendingInfo.hasPending) ? 'rgba(245,158,11,0.02)' : 'transparent'}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 20, width: '100%', flexWrap: 'nowrap' }}>
+                      {/* Route + meta */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flex: '1 1 auto', minWidth: 0 }}>
+                        <div style={{ width: 44, height: 44, borderRadius: 12, background: typeConfig.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                          {typeConfig.icon}
+                        </div>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: '0.62rem', fontWeight: 800, padding: '2px 8px', borderRadius: 6, background: typeConfig.bg, color: typeConfig.icon.props.color, border: `1px solid ${typeConfig.icon.props.color}30`, textTransform: 'uppercase', letterSpacing: '0.05em', flexShrink: 0 }}>
+                              {typeConfig.label}
+                            </span>
+                            <div style={{ fontSize: '0.98rem', fontWeight: 800, color: D.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {type === 'TRIP' && trip.origin ? `${trip.origin} → ` : ''}{trip.destination}
+                            </div>
+                          </div>
+                          <div style={{ fontSize: '0.75rem', color: D.textSub, marginTop: 3, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Car size={13} /> {trip.vehicleRegNumber}</span>
+                            {canManage && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><User size={13} /> {trip.driverUsername}</span>}
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Calendar size={13} /> {fmtDate(trip.scheduledDate)}</span>
+                            {cleanPurpose && <span style={{ color: D.textSub, fontWeight: 500 }}>· {cleanPurpose}</span>}
+                            {canManage && pendingInfo.pendingFuel.length > 0 && (
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: '#d97706', fontWeight: 700 }}>
+                                · <Fuel size={12} /> Fuel Log Submitted
+                              </span>
+                            )}
+                            {canManage && pendingInfo.pendingServices.length > 0 && (
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: '#d97706', fontWeight: 700 }}>
+                                · <Wrench size={12} /> Service Log Submitted
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Needs Review Pill (Placed to the left of the Status button) */}
+                      {canManage && pendingInfo.hasPending && (
+                        <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>
+                          <span style={{
+                            fontSize: '0.7rem', fontWeight: 800, padding: '5px 12px', borderRadius: 999,
+                            background: 'rgba(245,158,11,0.14)', color: '#d97706',
+                            border: '1.2px solid rgba(245,158,11,0.38)',
+                            display: 'inline-flex', alignItems: 'center', gap: 5,
+                            letterSpacing: '0.04em', textTransform: 'uppercase', flexShrink: 0,
+                            whiteSpace: 'nowrap',
+                            boxShadow: '0 2px 8px rgba(245,158,11,0.1)'
+                          }}>
+                            <AlertTriangle size={12} color="#d97706" /> {pendingInfo.totalPending === 1 ? 'Needs Review' : `${pendingInfo.totalPending} Needs Review`}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Status - Uniform Fixed Width Column for Consistent Alignment */}
+                      <div style={{ flexShrink: 0, width: 130, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+                        <span style={{
+                          fontSize: '0.68rem', fontWeight: 800, padding: '6px 14px', borderRadius: 999,
+                          background: badge.bg, color: badge.color, border: `1px solid ${badge.border}`,
+                          textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap',
+                          textAlign: 'center', minWidth: 105, display: 'inline-block', boxSizing: 'border-box'
+                        }}>
+                          {badge.label}
+                        </span>
+                      </div>
+
+                      {/* Actions - Uniformly Aligned Buttons */}
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0 }}>
+                        {/* Unified Details / Review Button */}
+                        {canManage && pendingInfo.hasPending ? (
+                          <ActionBtn
+                            onClick={() => setSelectedJobDetail(trip)}
+                            disabled={busy}
+                            bg="linear-gradient(135deg, #d97706, #f59e0b)"
+                            color="#fff"
+                            border="none"
+                            icon={<FileText size={15} />}
+                            minWidth={115}
+                            style={{ boxShadow: '0 4px 14px rgba(245,158,11,0.35)' }}
+                          >
+                            Review Log
+                          </ActionBtn>
+                        ) : (
+                          <ActionBtn
+                            onClick={() => setSelectedJobDetail(trip)}
+                            disabled={busy}
+                            bg={D.surfaceHi}
+                            color={D.text}
+                            border={`1px solid ${D.border}`}
+                            icon={<Eye size={15} color="var(--primary)" />}
+                            minWidth={105}
+                          >
+                            Details
+                          </ActionBtn>
+                        )}
+
+                        {/* Driver Actions */}
+                        {!canManage && s === 'ASSIGNED' && (
+                          <>
+                            <ActionBtn
+                              onClick={() => {
+                                if (hasActiveStartedJob) {
+                                  flash('error', 'You already have an active job in progress. Please complete it before accepting another job.')
+                                  return
+                                }
+                                setDriverModal({ action: 'start', trip })
+                              }}
+                              disabled={busy || hasActiveStartedJob}
+                              bg={hasActiveStartedJob ? D.surfaceHi : "linear-gradient(135deg,#059669,#10b981)"}
+                              color={hasActiveStartedJob ? D.textSub : "#fff"}
+                              border={hasActiveStartedJob ? `1px solid ${D.border}` : 'none'}
+                              icon={<Play size={14} />}
+                              minWidth={95}
+                              title={hasActiveStartedJob ? "Complete your in-progress job first" : "Accept Job"}
+                            >
+                              Accept
+                            </ActionBtn>
+                            <ActionBtn
+                              onClick={() => setDriverModal({ action: 'decline', trip })}
+                              disabled={busy}
+                              bg={D.redDim}
+                              color={D.red}
+                              border={`1px solid ${D.red}40`}
+                              icon={<X size={14} />}
+                              minWidth={95}
+                            >
+                              Decline
+                            </ActionBtn>
+                          </>
+                        )}
+                        {!canManage && s === 'STARTED' && (
+                          <>
+                            {/* Service jobs: clicking Complete directly opens service details popup to record details and complete */}
+                            {type === 'SERVICE' && (
+                              <ActionBtn
+                                onClick={() => openServiceLog(trip)}
+                                disabled={busy}
+                                bg="linear-gradient(135deg,#f59e0b,#d97706)"
+                                color="#fff"
+                                icon={<CheckCircle size={14} />}
+                                minWidth={105}
+                              >
+                                Complete
+                              </ActionBtn>
+                            )}
+
+                            {/* Fuel jobs: clicking Complete directly opens fuel fill-up popup to record details and complete */}
+                            {type === 'FUEL' && (
+                              <ActionBtn
+                                onClick={() => openFuelLog(trip)}
+                                disabled={busy}
+                                bg="linear-gradient(135deg,#059669,#10b981)"
+                                color="#fff"
+                                icon={<CheckCircle size={14} />}
+                                minWidth={105}
+                              >
+                                Complete
+                              </ActionBtn>
+                            )}
+
+                            {/* Trip jobs: driver can optionally log fuel during trip, and complete when finished */}
+                            {type === 'TRIP' && (
+                              <>
+                                <ActionBtn
+                                  onClick={() => openFuelLog(trip)}
+                                  disabled={busy}
+                                  bg={D.surfaceHi}
+                                  color={D.text}
+                                  border={`1px solid ${D.border}`}
+                                  icon={<Fuel size={14} color="#10b981" />}
+                                  minWidth={105}
+                                >
+                                  Log Fuel
+                                </ActionBtn>
+                                <ActionBtn
+                                  onClick={() => setDriverModal({ action: 'complete', trip })}
+                                  disabled={busy}
+                                  bg="linear-gradient(135deg,var(--primary-dark),var(--primary))"
+                                  color="#fff"
+                                  icon={<CheckCircle size={14} />}
+                                  minWidth={105}
+                                >
+                                  Complete
+                                </ActionBtn>
+                              </>
+                            )}
+                          </>
+                        )}
+
+                        {/* Controller Actions: moved into Details panel */}
+                      </div>
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Assign Job Modal (popup) ───────────────────────────────── */}
+      {showAssignModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(12px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20, animation: 'fadeIn 0.25s ease' }} onClick={closeAssignModal}>
+          <div style={{ background: D.surface, borderRadius: 24, width: '92%', maxWidth: 560, maxHeight: '92vh', overflowY: 'auto', boxShadow: '0 32px 100px rgba(0,0,0,0.6)', border: `1px solid ${D.border}`, animation: 'scaleIn 0.3s cubic-bezier(0.16, 1, 0.3, 1)' }} onClick={e => e.stopPropagation()}>
+            <div style={{
+              background: 'linear-gradient(135deg, var(--primary-dark) 0%, var(--primary) 45%, var(--primary-light) 100%)',
+              padding: '20px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              position: 'sticky', top: 0, zIndex: 2, boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08)'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <div style={{
+                  width: 44, height: 44, borderRadius: 12,
+                  background: 'rgba(255,255,255,0.15)', backdropFilter: 'blur(4px)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: '#fff', border: '1px solid rgba(255,255,255,0.2)', flexShrink: 0
+                }}>
+                  {{
+                    TRIP: <Navigation size={18} />,
+                    SERVICE: <Wrench size={18} />,
+                    FUEL: <Fuel size={18} />,
+                  }[activeTab] || <ClipboardList size={18} />}
+                </div>
+                <div>
+                  <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 900, color: '#fff', fontFamily: "'Plus Jakarta Sans', sans-serif", letterSpacing: '-0.02em' }}>
+                    {editingTripId ? 'Edit' : 'Assign'} a {activeTab === 'TRIP' ? 'Trip' : activeTab === 'SERVICE' ? 'Service Job' : 'Fuel Job'}
+                  </h2>
+                  <p style={{ margin: '3px 0 0', fontSize: '0.78rem', color: 'rgba(255,255,255,0.75)', fontWeight: 500 }}>
+                    {editingTripId ? 'Update details for this assignment' : (activeTab === 'TRIP' ? 'Assign a trip and a vehicle to a driver' : activeTab === 'SERVICE' ? 'Assign driver to perform vehicle service' : 'Assign driver to fill up gas for a vehicle')}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={closeAssignModal}
+                style={{ background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.18)', borderRadius: 10, padding: 9, color: '#fff', cursor: 'pointer', transition: 'all 0.2s', display: 'flex', alignItems: 'center' }}
+                onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.22)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.12)'}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleAssign} style={{ padding: '24px' }}>
+              {/* In-modal Error Alert Banner */}
+              {assignError && (
+                <div style={{
+                  marginBottom: 20, padding: '12px 16px', borderRadius: 14,
+                  background: 'rgba(239, 68, 68, 0.12)', border: '1.5px solid rgba(239, 68, 68, 0.35)',
+                  display: 'flex', alignItems: 'center', gap: 10, color: '#ef4444',
+                  fontSize: '0.84rem', fontWeight: 700, animation: 'fadeIn 0.2s ease',
+                }}>
+                  <AlertTriangle size={18} style={{ flexShrink: 0 }} />
+                  <span style={{ flex: 1, lineHeight: 1.4 }}>{assignError}</span>
+                  <button
+                    type="button"
+                    onClick={() => setAssignError(null)}
+                    style={{ background: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer', padding: 2, display: 'flex', alignItems: 'center' }}
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              )}
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
+                <div>
+                  <label style={labelStyle}>Vehicle *</label>
+                  <select
+                    style={{
+                      ...inputStyle,
+                      border: fieldErrors.vehicleRegNumber ? '1.5px solid #ef4444' : `1px solid ${D.inputBorder}`,
+                      background: fieldErrors.vehicleRegNumber ? 'rgba(239, 68, 68, 0.04)' : D.inputBg,
+                    }}
+                    value={form.vehicleRegNumber}
+                    onChange={e => {
+                      handleVehicleChange(e.target.value)
+                      if (fieldErrors.vehicleRegNumber) setFieldErrors(fe => ({ ...fe, vehicleRegNumber: null }))
+                      if (assignError) setAssignError(null)
+                    }}
+                    onFocus={onFocus}
+                    onBlur={onBlur}
+                    disabled={editingTripStatus === 'STARTED'}
+                  >
+                    <option value="">Select vehicle…</option>
+                    {vehicles.map(v => <option key={v.id} value={v.registrationNo}>{v.registrationNo}{v.model ? ` — ${v.model}` : ''}{v.driverUsername ? ` 👤 ${v.driverUsername}` : ''}</option>)}
+                  </select>
+                  {fieldErrors.vehicleRegNumber && (
+                    <span style={{ fontSize: '0.72rem', color: '#ef4444', fontWeight: 700, marginTop: 4, display: 'block' }}>
+                      {fieldErrors.vehicleRegNumber}
+                    </span>
+                  )}
+                  {/* Show auto-fill hint */}
+                  {form.vehicleRegNumber && vehicles.find(v => v.registrationNo === form.vehicleRegNumber)?.driverUsername && (
+                    <p style={{ margin: '6px 0 0', fontSize: '0.72rem', color: D.green, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <UserCheck size={11} /> Driver auto-filled from vehicle assignment
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label style={labelStyle}>Driver *</label>
+                  <select
+                    style={{
+                      ...inputStyle,
+                      border: fieldErrors.driverUsername ? '1.5px solid #ef4444' : `1px solid ${D.inputBorder}`,
+                      background: fieldErrors.driverUsername ? 'rgba(239, 68, 68, 0.04)' : D.inputBg,
+                    }}
+                    value={form.driverUsername}
+                    onChange={e => {
+                      setForm(f => ({ ...f, driverUsername: e.target.value }))
+                      if (fieldErrors.driverUsername) setFieldErrors(fe => ({ ...fe, driverUsername: null }))
+                      if (assignError) setAssignError(null)
+                    }}
+                    onFocus={onFocus}
+                    onBlur={onBlur}
+                    disabled={editingTripStatus === 'STARTED'}
+                  >
+                    <option value="">Select driver…</option>
+                    {drivers.map(d => {
+                      const isBusy = trips.some(t => t.driverUsername === d.userName && (t.status || '').toUpperCase() === 'STARTED' && (!editingTripId || t.id !== editingTripId))
+                      return (
+                        <option key={d.id} value={d.userName}>
+                          {d.userName}{isBusy ? ' ⏳ (Currently on job)' : ''}
+                        </option>
+                      )
+                    })}
+                  </select>
+                  {fieldErrors.driverUsername && (
+                    <span style={{ fontSize: '0.72rem', color: '#ef4444', fontWeight: 700, marginTop: 4, display: 'block' }}>
+                      {fieldErrors.driverUsername}
+                    </span>
+                  )}
+                </div>
+                
+                {activeTab === 'TRIP' && (
+                  <div>
+                    <label style={labelStyle}>Origin</label>
+                    <input
+                      style={inputStyle}
+                      placeholder="e.g. Colombo"
+                      value={form.origin}
+                      onChange={e => setForm(f => ({ ...f, origin: e.target.value }))}
+                      onFocus={onFocus}
+                      onBlur={onBlur}
+                      disabled={editingTripStatus === 'STARTED'}
+                    />
+                  </div>
+                )}
+                
+                <div style={{ gridColumn: activeTab === 'TRIP' ? 'auto' : 'span 2' }}>
+                  <label style={labelStyle}>
+                    {activeTab === 'TRIP' ? 'Destination *' : activeTab === 'SERVICE' ? 'Service Center / Location *' : 'Fuel Station / Location *'}
+                  </label>
+                  <input
+                    style={{
+                      ...inputStyle,
+                      border: fieldErrors.destination ? '1.5px solid #ef4444' : `1px solid ${D.inputBorder}`,
+                      background: fieldErrors.destination ? 'rgba(239, 68, 68, 0.04)' : D.inputBg,
+                    }}
+                    placeholder={activeTab === 'TRIP' ? 'e.g. Kandy' : activeTab === 'SERVICE' ? 'e.g. Toyota Service Center, Colombo' : 'e.g. Lanka IOC Station, Kandy'} 
+                    value={form.destination} 
+                    onChange={e => {
+                      setForm(f => ({ ...f, destination: e.target.value }))
+                      if (fieldErrors.destination) setFieldErrors(fe => ({ ...fe, destination: null }))
+                      if (assignError) setAssignError(null)
+                    }}
+                    onFocus={onFocus} 
+                    onBlur={onBlur} 
+                  />
+                  {fieldErrors.destination && (
+                    <span style={{ fontSize: '0.72rem', color: '#ef4444', fontWeight: 700, marginTop: 4, display: 'block' }}>
+                      {fieldErrors.destination}
+                    </span>
+                  )}
+                </div>
+                
+                <div>
+                  <label style={labelStyle}>Scheduled Date *</label>
+                  <input
+                    type="date"
+                    style={{
+                      ...inputStyle,
+                      border: fieldErrors.scheduledDate ? '1.5px solid #ef4444' : `1px solid ${D.inputBorder}`,
+                      background: fieldErrors.scheduledDate ? 'rgba(239, 68, 68, 0.04)' : D.inputBg,
+                    }}
+                    value={form.scheduledDate}
+                    min={editingTripStatus === 'STARTED' ? undefined : todayStr}
+                    onChange={e => {
+                      setForm(f => ({ ...f, scheduledDate: e.target.value }))
+                      if (fieldErrors.scheduledDate) setFieldErrors(fe => ({ ...fe, scheduledDate: null }))
+                      if (assignError) setAssignError(null)
+                    }}
+                    onFocus={onFocus}
+                    onBlur={onBlur}
+                    disabled={editingTripStatus === 'STARTED'}
+                  />
+                  {fieldErrors.scheduledDate && (
+                    <span style={{ fontSize: '0.72rem', color: '#ef4444', fontWeight: 700, marginTop: 4, display: 'block' }}>
+                      {fieldErrors.scheduledDate}
+                    </span>
+                  )}
+                </div>
+                
+                <div>
+                  <label style={labelStyle}>
+                    {activeTab === 'TRIP' ? 'Purpose' : activeTab === 'SERVICE' ? 'Service Description *' : 'Instructions'}
+                  </label>
+                  {activeTab === 'SERVICE' ? (
+                    <>
+                      <select
+                        style={{
+                          ...inputStyle,
+                          border: fieldErrors.purpose ? '1.5px solid #ef4444' : `1px solid ${D.inputBorder}`,
+                          background: fieldErrors.purpose ? 'rgba(239, 68, 68, 0.04)' : D.inputBg,
+                        }}
+                        value={form.purpose}
+                        onChange={e => {
+                          setForm(f => ({ ...f, purpose: e.target.value }))
+                          if (fieldErrors.purpose) setFieldErrors(fe => ({ ...fe, purpose: null }))
+                          if (assignError) setAssignError(null)
+                        }}
+                        onFocus={onFocus}
+                        onBlur={onBlur}
+                        disabled={editingTripStatus === 'STARTED'}
+                      >
+                        <option value="">Select service type…</option>
+                        {sortedServiceTypes.map(t => (
+                          <option key={t.value} value={t.label} style={{ color: t.isOverdue ? '#ef4444' : 'inherit', fontWeight: t.isOverdue ? 'bold' : 'normal' }}>
+                            {t.isOverdue ? `⚠️ [OVERDUE] ${t.label}` : t.label}
+                          </option>
+                        ))}
+                      </select>
+                      {fieldErrors.purpose && (
+                        <span style={{ fontSize: '0.72rem', color: '#ef4444', fontWeight: 700, marginTop: 4, display: 'block' }}>
+                          {fieldErrors.purpose}
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <input
+                      style={inputStyle} 
+                      placeholder={activeTab === 'TRIP' ? 'e.g. Cargo delivery' : 'e.g. Fill full tank Octane 95 before trip'} 
+                      value={form.purpose} 
+                      onChange={e => setForm(f => ({ ...f, purpose: e.target.value }))} 
+                      onFocus={onFocus} 
+                      onBlur={onBlur} 
+                      disabled={editingTripStatus === 'STARTED'}
+                    />
+                  )}
+                </div>
+
+                {/* Controller access grant toggle for Service Record Details (SERVICE jobs only) */}
+                {activeTab === 'SERVICE' && (
+                  <div style={{
+                    gridColumn: '1 / -1', padding: '14px 18px', borderRadius: 16,
+                    background: form.allowDriverServiceLog ? 'rgba(16,185,129,0.08)' : D.surfaceHi,
+                    border: `1.5px solid ${form.allowDriverServiceLog ? 'rgba(16,185,129,0.3)' : D.border}`,
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14,
+                    transition: 'all 0.2s'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                      <div style={{
+                        width: 36, height: 36, borderRadius: 10,
+                        background: form.allowDriverServiceLog ? 'rgba(16,185,129,0.18)' : D.border,
+                        color: form.allowDriverServiceLog ? '#10b981' : D.textSub,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0
+                      }}>
+                        <Wrench size={18} />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '0.85rem', fontWeight: 800, color: D.text }}>
+                          Grant Access for Driver Service Details Entry
+                        </div>
+                        <div style={{ fontSize: '0.74rem', color: D.textSub, marginTop: 2 }}>
+                          Allow driver to add service record cost, date &amp; workshop details. Driver can also skip if not needed.
+                        </div>
+                      </div>
+                    </div>
+                    <label style={{ position: 'relative', display: 'inline-block', width: 44, height: 24, minWidth: 44, minHeight: 24, cursor: editingTripStatus === 'STARTED' ? 'not-allowed' : 'pointer', flexShrink: 0, margin: 0, padding: 0, boxSizing: 'border-box' }}>
+                      <input
+                        type="checkbox"
+                        checked={form.allowDriverServiceLog}
+                        onChange={e => { if (editingTripStatus !== 'STARTED') setForm(f => ({ ...f, allowDriverServiceLog: e.target.checked })) }}
+                        style={{ position: 'absolute', opacity: 0, width: 0, height: 0, margin: 0, padding: 0 }}
+                        disabled={editingTripStatus === 'STARTED'}
+                      />
+                      <div style={{
+                        position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 999,
+                        background: form.allowDriverServiceLog ? '#10b981' : D.border,
+                        transition: 'background 0.2s ease', boxSizing: 'border-box'
+                      }} />
+                      <div style={{
+                        position: 'absolute', top: '4px', left: form.allowDriverServiceLog ? '24px' : '4px',
+                        width: '16px', height: '16px', borderRadius: '50%', background: '#fff',
+                        transition: 'left 0.2s ease', boxShadow: '0 2px 4px rgba(0,0,0,0.2)',
+                        boxSizing: 'border-box'
+                      }} />
+                    </label>
+                  </div>
+                )}
+
+                {/* Overdue alert banner inside the form */}
+                {activeTab === 'SERVICE' && selectedVehicle && sortedServiceTypes.some(t => t.isOverdue) && (
+                  <div style={{
+                    gridColumn: 'span 2', display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '12px 16px', borderRadius: 12, background: 'rgba(239,68,68,0.1)',
+                    color: '#ef4444', border: '1px solid rgba(239,68,68,0.2)', fontSize: '0.82rem', fontWeight: 600,
+                  }}>
+                    <AlertTriangle size={15} style={{ flexShrink: 0 }} />
+                    This vehicle has overdue service milestones! Please prioritize them (marked with ⚠️).
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', gap: 12, marginTop: 28 }}>
+                <button type="button" disabled={submitting} onClick={closeAssignModal}
+                  style={{ flex: 1, padding: '13px', borderRadius: 14, border: `1px solid ${D.border}`, background: 'transparent', color: D.text, fontSize: '0.95rem', fontWeight: 800, cursor: submitting ? 'not-allowed' : 'pointer', fontFamily: 'inherit', transition: 'all 0.2s' }}
+                  onMouseEnter={e => { if (!submitting) e.currentTarget.style.background = D.surfaceHi }}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                >Discard</button>
+                <button type="submit" disabled={submitting}
+                  style={{ flex: 1, padding: '13px', borderRadius: 14, border: 'none', background: 'linear-gradient(135deg, var(--primary-dark), var(--primary))', color: '#fff', fontSize: '0.95rem', fontWeight: 800, cursor: submitting ? 'not-allowed' : 'pointer', fontFamily: 'inherit', boxShadow: '0 8px 24px var(--primary-glow)', opacity: submitting ? 0.7 : 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                >
+                  {submitting ? <Loader2 size={17} className="spin" /> : (editingTripId ? <Edit2 size={17} /> : <Plus size={17} strokeWidth={3} />)}
+                  {submitting ? (editingTripId ? 'Updating…' : 'Assigning…') : (editingTripId ? 'Update Details' : `Assign ${activeTab === 'TRIP' ? 'Trip' : activeTab === 'SERVICE' ? 'Service' : 'Fuel'}`)}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Driver action confirmation ──────────────────────────────── */}
+      <TripActionModal
+        action={driverModal?.action}
+        trip={driverModal?.trip}
+        busy={busyId === driverModal?.trip?.id}
+        hasServiceAccess={hasDriverServiceAccess(driverModal?.trip)}
+        hasPendingLog={driverModal?.trip ? (allServices || []).some(s => s && s.status === 'PENDING' && (s.vehicleRegNumber || '').replace(/^VEH-/i, '').trim().toUpperCase() === (driverModal.trip.vehicleRegNumber || '').replace(/^VEH-/i, '').trim().toUpperCase()) : false}
+        onOpenServiceLog={openServiceLog}
+        onClose={() => setDriverModal(null)}
+        onConfirm={runDriverAction}
+      />
+
+      {/* ── Cancel Job Confirmation Modal ──────────────────────────── */}
+      {tripToCancel && (
+        <div onClick={() => !cancelling && setTripToCancel(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 20, animation: 'fadeIn 0.2s ease' }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ position: 'relative', width: '100%', maxWidth: 440, background: D.surface, borderRadius: 24, border: `1px solid ${D.border}`, boxShadow: '0 32px 80px rgba(0,0,0,0.5)', padding: '36px 32px', textAlign: 'center', animation: 'scaleIn 0.25s cubic-bezier(0.16,1,0.3,1)' }}>
+            <button type="button" onClick={() => !cancelling && setTripToCancel(null)} disabled={cancelling}
+              style={{ position: 'absolute', top: 20, right: 20, background: 'transparent', border: 'none', borderRadius: 10, padding: 8, color: D.textSub, cursor: cancelling ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              onMouseEnter={e => { if (!cancelling) e.currentTarget.style.background = D.surfaceHi }}
+              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+              <X size={18} />
+            </button>
+            <div style={{ width: 64, height: 64, borderRadius: 18, background: D.redDim, border: `1px solid ${D.red}40`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: D.red, margin: '0 auto 20px' }}>
+              <Ban size={28} />
+            </div>
+            <h3 style={{ margin: '0 0 10px', fontSize: '1.3rem', fontWeight: 800, color: D.text, fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
+              Cancel job to "{tripToCancel.destination}"?
+            </h3>
+            <p style={{ margin: '0 0 28px', fontSize: '0.9rem', color: D.textSub, lineHeight: 1.6 }}>
+              This job assigned to <strong style={{ color: D.text }}>{tripToCancel.driverUsername}</strong> will be cancelled and the driver notified. This cannot be undone.
+            </p>
+            <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+              <button type="button" onClick={() => setTripToCancel(null)} disabled={cancelling}
+                style={{ flex: 1, maxWidth: 170, padding: '11px 20px', borderRadius: 12, border: `1px solid ${D.border}`, background: 'transparent', color: D.text, cursor: cancelling ? 'not-allowed' : 'pointer', fontSize: '0.88rem', fontWeight: 700, transition: 'all 0.2s', fontFamily: 'inherit' }}
+                onMouseEnter={e => { if (!cancelling) e.currentTarget.style.background = D.surfaceHi }}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                Keep Job
+              </button>
+              <button type="button" onClick={confirmCancel} disabled={cancelling}
+                style={{ flex: 1, maxWidth: 170, padding: '11px 20px', borderRadius: 12, border: 'none', background: D.red, color: '#fff', fontSize: '0.88rem', fontWeight: 700, cursor: cancelling ? 'not-allowed' : 'pointer', transition: 'all 0.2s', boxShadow: '0 4px 12px rgba(239,68,68,0.3)', fontFamily: 'inherit', opacity: cancelling ? 0.7 : 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7 }}>
+                {cancelling && <Loader2 size={15} className="spin" />}
+                {cancelling ? 'Cancelling…' : 'Cancel Job'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Delete Job Confirmation Modal ──────────────────────────── */}
+      {deleteConfirmTrip && (
+        <div onClick={() => !deletingId && setDeleteConfirmTrip(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 20, animation: 'fadeIn 0.2s ease' }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ position: 'relative', width: '100%', maxWidth: 440, background: D.surface, borderRadius: 24, border: `1px solid ${D.border}`, boxShadow: '0 32px 80px rgba(0,0,0,0.5)', padding: '36px 32px', textAlign: 'center', animation: 'scaleIn 0.25s cubic-bezier(0.16,1,0.3,1)' }}>
+            <button type="button" onClick={() => !deletingId && setDeleteConfirmTrip(null)} disabled={!!deletingId}
+              style={{ position: 'absolute', top: 20, right: 20, background: 'transparent', border: 'none', borderRadius: 10, padding: 8, color: D.textSub, cursor: deletingId ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              onMouseEnter={e => { if (!deletingId) e.currentTarget.style.background = D.surfaceHi }}
+              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+              <X size={18} />
+            </button>
+            <div style={{ width: 64, height: 64, borderRadius: 18, background: D.redDim, border: `1px solid ${D.red}40`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: D.red, margin: '0 auto 20px' }}>
+              <Trash2 size={28} />
+            </div>
+            <h3 style={{ margin: '0 0 10px', fontSize: '1.3rem', fontWeight: 800, color: D.text, fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
+              Delete job to "{deleteConfirmTrip.destination}"?
+            </h3>
+            <p style={{ margin: '0 0 28px', fontSize: '0.9rem', color: D.textSub, lineHeight: 1.6 }}>
+              This will soft-delete the job. You can find and restore it from the **Deleted Jobs** tab.
+            </p>
+            <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+              <button type="button" onClick={() => setDeleteConfirmTrip(null)} disabled={!!deletingId}
+                style={{ flex: 1, maxWidth: 170, padding: '11px 20px', borderRadius: 12, border: `1px solid ${D.border}`, background: 'transparent', color: D.text, cursor: deletingId ? 'not-allowed' : 'pointer', fontSize: '0.88rem', fontWeight: 700, transition: 'all 0.2s', fontFamily: 'inherit' }}
+                onMouseEnter={e => { if (!deletingId) e.currentTarget.style.background = D.surfaceHi }}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                Cancel
+              </button>
+              <button type="button" onClick={() => handleDeleteTrip(deleteConfirmTrip.id)} disabled={!!deletingId}
+                style={{ flex: 1, maxWidth: 170, padding: '11px 20px', borderRadius: 12, border: 'none', background: D.red, color: '#fff', fontSize: '0.88rem', fontWeight: 700, cursor: deletingId ? 'not-allowed' : 'pointer', transition: 'all 0.2s', boxShadow: '0 4px 12px rgba(239,68,68,0.3)', fontFamily: 'inherit', opacity: deletingId ? 0.7 : 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7 }}>
+                {deletingId && <Loader2 size={15} className="spin" />}
+                {deletingId ? 'Deleting…' : 'Delete Job'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Job Details Slide-over Drawer (Controller & Driver) ────── */}
+      {selectedJobDetail && (() => {
+        const trip = selectedJobDetail
+        const drawerPendingInfo = getJobPendingInfo(trip)
+        const type = getJobType(trip.purpose)
+        const cleanPurpose = getCleanPurpose(trip.purpose)
+        const badge = statusBadge(trip.status)
+        const s = up(trip.status)
+        const vehicleObj = vehicles.find(v => (v.registrationNo || '').replace(/^VEH-/i, '').toUpperCase() === (trip.vehicleRegNumber || '').replace(/^VEH-/i, '').toUpperCase())
+        const driverObj = drivers.find(d => (d.userName || '').toLowerCase() === (trip.driverUsername || '').toLowerCase())
+
+        const typeHeaderGradients = {
+          TRIP: 'linear-gradient(135deg, #1e3a8a 0%, #2563eb 50%, #3b82f6 100%)',
+          SERVICE: 'linear-gradient(135deg, #78350f 0%, #b45309 50%, #d97706 100%)',
+          FUEL: 'linear-gradient(135deg, #064e3b 0%, #047857 50%, #10b981 100%)',
+        }
+
+        const typeIcons = {
+          TRIP: <Navigation size={22} />,
+          SERVICE: <Wrench size={22} />,
+          FUEL: <Fuel size={22} />,
+        }
+
+        const typeLabels = {
+          TRIP: 'Trip Assignment',
+          SERVICE: 'Service Assignment',
+          FUEL: 'Fuel Assignment',
+        }
+
+        const jobServices = drawerPendingInfo.jobServices
+
+        const jobFuelLogs = drawerPendingInfo.jobFuelLogs
+
+        return (
+          <div
+            onClick={() => setSelectedJobDetail(null)}
+            style={{
+              position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)',
+              backdropFilter: 'blur(6px)', zIndex: 1250,
+              animation: 'fadeIn 0.18s ease',
+            }}
+          >
+            {/* Drawer panel */}
+            <div
+              onClick={e => e.stopPropagation()}
+              style={{
+                position: 'fixed', top: 0, right: 0, bottom: 0,
+                width: '100%', maxWidth: 640,
+                background: D.bg, display: 'flex', flexDirection: 'column',
+                boxShadow: '-20px 0 60px rgba(0,0,0,0.45)',
+                animation: 'slideInRight 0.28s cubic-bezier(0.22,1,0.36,1)',
+                borderLeft: `1px solid ${D.border}`,
+                overflow: 'hidden',
+              }}
+            >
+              {/* Header */}
+              <div style={{
+                background: typeHeaderGradients[type] || 'linear-gradient(135deg, var(--primary-dark) 0%, var(--primary) 45%, var(--primary-light) 100%)',
+                padding: '24px 28px', display: 'flex', alignItems: 'center',
+                justifyContent: 'space-between', flexShrink: 0, gap: 16,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                  <div style={{
+                    width: 48, height: 48, borderRadius: 14,
+                    background: 'rgba(255,255,255,0.18)', border: '1px solid rgba(255,255,255,0.25)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff',
+                    flexShrink: 0
+                  }}>
+                    {typeIcons[type] || <Navigation size={22} />}
+                  </div>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+                      <span style={{ fontSize: '0.65rem', fontWeight: 900, padding: '2px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.22)', color: '#fff', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                        {typeLabels[type] || type}
+                      </span>
+                      <span style={{ fontSize: '0.78rem', color: 'rgba(255,255,255,0.85)', fontWeight: 600 }}>
+                        Job #{trip.id}
+                      </span>
+                    </div>
+                    <h2 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 900, color: '#fff', fontFamily: "'Plus Jakarta Sans',sans-serif", letterSpacing: '-0.02em' }}>
+                      {type === 'TRIP' && trip.origin ? `${trip.origin} → ` : ''}{trip.destination}
+                    </h2>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setSelectedJobDetail(null)}
+                  style={{
+                    background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.22)',
+                    borderRadius: 10, cursor: 'pointer', color: '#fff',
+                    padding: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'all 0.15s'
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.28)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.15)'}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div style={{ flex: 1, overflowY: 'auto', padding: '24px 28px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+                {/* Pending Review Notice Banner (Controller only) */}
+                {canManage && drawerPendingInfo.hasPending && (
+                  <div style={{
+                    padding: '14px 18px', borderRadius: 16,
+                    background: 'rgba(245,158,11,0.12)', border: '1.5px solid rgba(245,158,11,0.38)',
+                    display: 'flex', alignItems: 'center', gap: 12, color: '#d97706',
+                    boxShadow: '0 4px 16px rgba(245,158,11,0.1)'
+                  }}>
+                    <div style={{ width: 36, height: 36, borderRadius: 10, background: 'rgba(245,158,11,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <AlertTriangle size={18} color="#d97706" />
+                    </div>
+                    <div style={{ flex: 1, fontSize: '0.82rem', lineHeight: 1.45 }}>
+                      <div style={{ fontWeight: 800, fontSize: '0.88rem', marginBottom: 2 }}>Log Review Required</div>
+                      Driver @{trip.driverUsername} recorded {drawerPendingInfo.totalPending} log(s) for this job that require your review. Please review, edit details if needed, and approve or reject below.
+                    </div>
+                  </div>
+                )}
+
+                {/* Status Notice Banner */}
+                <div style={{
+                  padding: '14px 18px', borderRadius: 16,
+                  background: badge.bg, border: `1.5px solid ${badge.border}`,
+                  display: 'flex', alignItems: 'flex-start', gap: 12
+                }}>
+                  <div style={{ marginTop: 2, color: badge.color, flexShrink: 0 }}>
+                    {s === 'COMPLETED' ? <CheckCircle size={18} /> : s === 'DECLINED' ? <AlertTriangle size={18} /> : s === 'CANCELLED' ? <Ban size={18} /> : <Clock size={18} />}
+                  </div>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: '0.74rem', fontWeight: 900, color: badge.color, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                        {badge.label}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '0.82rem', color: D.text, marginTop: 4, fontWeight: 500, lineHeight: 1.4 }}>
+                      {s === 'ASSIGNED' && (canManage ? `Assigned to driver ${trip.driverUsername}. Waiting for driver to accept or decline.` : `You have been assigned this job. Please accept or decline the assignment.`)}
+                      {s === 'STARTED' && (canManage ? `Job accepted by ${trip.driverUsername} and currently in progress.` : `You have accepted this job and it is currently in progress.`)}
+                      {s === 'COMPLETED' && `Job has been successfully completed.`}
+                      {s === 'CANCELLED' && `This assignment was cancelled by the controller.`}
+                      {s === 'DECLINED' && (
+                        <span>
+                          {canManage ? 'Driver declined this assignment.' : 'You declined this assignment.'} {trip.declineReason ? <>Reason: <strong style={{ color: D.red }}>"{trip.declineReason}"</strong></> : 'No reason provided.'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Timeline & Execution Timestamps Card */}
+                <div style={{ background: D.surface, borderRadius: 18, border: `1px solid ${D.border}`, padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <div style={{ fontSize: '0.85rem', fontWeight: 800, color: D.text, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Clock size={16} color="var(--primary)" /> Job Timeline &amp; Timestamps
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                    {/* Assigned Date & Time */}
+                    <div style={{ background: D.surfaceHi, padding: '12px 14px', borderRadius: 12, border: `1px solid ${D.border}` }}>
+                      <div style={{ fontSize: '0.7rem', fontWeight: 700, color: D.textSub, textTransform: 'uppercase' }}>Assigned Date &amp; Time</div>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 800, color: D.text, marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Calendar size={14} color="var(--primary)" />
+                        {fmtDateTime(trip.createdAt || trip.scheduledDate)}
+                      </div>
+                      {trip.assignedBy && (
+                        <div style={{ fontSize: '0.72rem', color: D.textSub, marginTop: 4 }}>
+                          Assigned by: <strong style={{ color: D.text }}>@{trip.assignedBy}</strong>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Finished / Completed Date & Time */}
+                    <div style={{
+                      background: s === 'COMPLETED' ? 'rgba(16,185,129,0.08)' : D.surfaceHi,
+                      padding: '12px 14px', borderRadius: 12,
+                      border: s === 'COMPLETED' ? '1.2px solid rgba(16,185,129,0.35)' : `1px solid ${D.border}`
+                    }}>
+                      <div style={{ fontSize: '0.7rem', fontWeight: 700, color: s === 'COMPLETED' ? '#10b981' : D.textSub, textTransform: 'uppercase' }}>
+                        Finished / Completed Date &amp; Time
+                      </div>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 800, color: s === 'COMPLETED' ? '#10b981' : D.text, marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <CheckCircle size={14} color={s === 'COMPLETED' ? '#10b981' : D.textSub} />
+                        {trip.completedAt ? fmtDateTime(trip.completedAt) : s === 'COMPLETED' ? (trip.updatedAt ? fmtDateTime(trip.updatedAt) : 'Completed') : 'Not Completed Yet'}
+                      </div>
+                    </div>
+
+                    {/* Started Date & Time (if available) */}
+                    {trip.startedAt && (
+                      <div style={{ background: D.surfaceHi, padding: '12px 14px', borderRadius: 12, border: `1px solid ${D.border}` }}>
+                        <div style={{ fontSize: '0.7rem', fontWeight: 700, color: D.textSub, textTransform: 'uppercase' }}>Started / In Progress At</div>
+                        <div style={{ fontSize: '0.88rem', fontWeight: 800, color: D.text, marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <Play size={14} color="#38bdf8" />
+                          {fmtDateTime(trip.startedAt)}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Scheduled Date */}
+                    <div style={{ background: D.surfaceHi, padding: '12px 14px', borderRadius: 12, border: `1px solid ${D.border}` }}>
+                      <div style={{ fontSize: '0.7rem', fontWeight: 700, color: D.textSub, textTransform: 'uppercase' }}>Target Scheduled Date</div>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 800, color: D.text, marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Calendar size={14} color="var(--primary)" />
+                        {fmtDate(trip.scheduledDate)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Assignment Details Card */}
+                <div style={{ background: D.surface, borderRadius: 18, border: `1px solid ${D.border}`, padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <div style={{ fontSize: '0.85rem', fontWeight: 800, color: D.text, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Navigation size={16} color="var(--primary)" /> Route &amp; Assignment Details
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                    {type === 'TRIP' && trip.origin && (
+                      <div style={{ background: D.surfaceHi, padding: '10px 14px', borderRadius: 12, border: `1px solid ${D.border}` }}>
+                        <div style={{ fontSize: '0.7rem', fontWeight: 700, color: D.textSub, textTransform: 'uppercase' }}>Origin</div>
+                        <div style={{ fontSize: '0.9rem', fontWeight: 800, color: D.text, marginTop: 2 }}>{trip.origin}</div>
+                      </div>
+                    )}
+                    <div style={{ background: D.surfaceHi, padding: '10px 14px', borderRadius: 12, border: `1px solid ${D.border}`, gridColumn: (type === 'TRIP' && trip.origin) ? 'auto' : 'span 2' }}>
+                      <div style={{ fontSize: '0.7rem', fontWeight: 700, color: D.textSub, textTransform: 'uppercase' }}>
+                        {type === 'SERVICE' ? 'Service Center / Workshop' : type === 'FUEL' ? 'Fuel Station' : 'Destination'}
+                      </div>
+                      <div style={{ fontSize: '0.9rem', fontWeight: 800, color: D.text, marginTop: 2 }}>{trip.destination}</div>
+                    </div>
+                    <div style={{ background: D.surfaceHi, padding: '10px 14px', borderRadius: 12, border: `1px solid ${D.border}` }}>
+                      <div style={{ fontSize: '0.7rem', fontWeight: 700, color: D.textSub, textTransform: 'uppercase' }}>Scheduled Date</div>
+                      <div style={{ fontSize: '0.9rem', fontWeight: 800, color: D.text, marginTop: 2, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Calendar size={14} color="var(--primary)" /> {fmtDate(trip.scheduledDate)}
+                      </div>
+                    </div>
+                    <div style={{ background: D.surfaceHi, padding: '10px 14px', borderRadius: 12, border: `1px solid ${D.border}` }}>
+                      <div style={{ fontSize: '0.7rem', fontWeight: 700, color: D.textSub, textTransform: 'uppercase' }}>Job Type</div>
+                      <div style={{ fontSize: '0.9rem', fontWeight: 800, color: D.text, marginTop: 2 }}>{type}</div>
+                    </div>
+                  </div>
+                  {cleanPurpose && (
+                    <div style={{ background: D.surfaceHi, padding: '12px 14px', borderRadius: 12, border: `1px solid ${D.border}` }}>
+                      <div style={{ fontSize: '0.7rem', fontWeight: 700, color: D.textSub, textTransform: 'uppercase', marginBottom: 4 }}>
+                        {type === 'SERVICE' ? 'Service Task Description' : type === 'FUEL' ? 'Fuel Instructions' : 'Trip Purpose'}
+                      </div>
+                      <div style={{ fontSize: '0.85rem', color: D.text, lineHeight: 1.5 }}>{cleanPurpose}</div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Vehicle Details Card */}
+                <div style={{ background: D.surface, borderRadius: 18, border: `1px solid ${D.border}`, padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 800, color: D.text, display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <Car size={16} color="var(--primary)" /> Assigned Vehicle
+                    </div>
+                    <span style={{ fontSize: '0.72rem', fontWeight: 800, padding: '3px 10px', borderRadius: 999, background: D.surfaceHi, color: 'var(--primary)', border: `1px solid ${D.border}` }}>
+                      {trip.vehicleRegNumber}
+                    </span>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                    <div style={{ background: D.surfaceHi, padding: '10px 14px', borderRadius: 12, border: `1px solid ${D.border}` }}>
+                      <div style={{ fontSize: '0.7rem', fontWeight: 700, color: D.textSub, textTransform: 'uppercase' }}>Model / Make</div>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 800, color: D.text, marginTop: 2 }}>
+                        {vehicleObj ? `${vehicleObj.manufacturer || ''} ${vehicleObj.model || ''}`.trim() : 'N/A'}
+                      </div>
+                    </div>
+                    <div style={{ background: D.surfaceHi, padding: '10px 14px', borderRadius: 12, border: `1px solid ${D.border}` }}>
+                      <div style={{ fontSize: '0.7rem', fontWeight: 700, color: D.textSub, textTransform: 'uppercase' }}>Fuel Type</div>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 800, color: D.text, marginTop: 2 }}>
+                        {vehicleObj?.fuelType ? formatFuelType(vehicleObj.fuelType) : 'N/A'}
+                      </div>
+                    </div>
+                    <div style={{ background: D.surfaceHi, padding: '10px 14px', borderRadius: 12, border: `1px solid ${D.border}` }}>
+                      <div style={{ fontSize: '0.7rem', fontWeight: 700, color: D.textSub, textTransform: 'uppercase' }}>Odometer / Mileage</div>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 800, color: D.text, marginTop: 2, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Gauge size={14} color="var(--primary)" />
+                        {vehicleObj?.currentMileageKm ? `${Number(vehicleObj.currentMileageKm).toLocaleString()} km` : 'N/A'}
+                      </div>
+                    </div>
+                    <div style={{ background: D.surfaceHi, padding: '10px 14px', borderRadius: 12, border: `1px solid ${D.border}` }}>
+                      <div style={{ fontSize: '0.7rem', fontWeight: 700, color: D.textSub, textTransform: 'uppercase' }}>Vehicle Type</div>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 800, color: D.text, marginTop: 2 }}>
+                        {vehicleObj?.vehicleType || 'Standard'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Driver Details Card (Controller only) */}
+                {canManage && (
+                  <div style={{ background: D.surface, borderRadius: 18, border: `1px solid ${D.border}`, padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <div style={{ fontSize: '0.85rem', fontWeight: 800, color: D.text, display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <User size={16} color="var(--primary)" /> Assigned Driver
+                      </div>
+                      <span style={{ fontSize: '0.72rem', fontWeight: 800, padding: '3px 10px', borderRadius: 999, background: 'var(--primary-glow)', color: 'var(--primary)', border: '1px solid var(--primary-border)' }}>
+                        @{trip.driverUsername}
+                      </span>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                      <div style={{ background: D.surfaceHi, padding: '10px 14px', borderRadius: 12, border: `1px solid ${D.border}` }}>
+                        <div style={{ fontSize: '0.7rem', fontWeight: 700, color: D.textSub, textTransform: 'uppercase' }}>Driver Name</div>
+                        <div style={{ fontSize: '0.88rem', fontWeight: 800, color: D.text, marginTop: 2 }}>
+                          {driverObj ? `${driverObj.firstName || ''} ${driverObj.lastName || ''}`.trim() || driverObj.userName : trip.driverUsername}
+                        </div>
+                      </div>
+                      <div style={{ background: D.surfaceHi, padding: '10px 14px', borderRadius: 12, border: `1px solid ${D.border}` }}>
+                        <div style={{ fontSize: '0.7rem', fontWeight: 700, color: D.textSub, textTransform: 'uppercase' }}>Phone / Contact</div>
+                        <div style={{ fontSize: '0.88rem', fontWeight: 800, color: D.text, marginTop: 2 }}>
+                          {driverObj?.phoneNumber || driverObj?.phone || 'N/A'}
+                        </div>
+                      </div>
+                      <div style={{ background: D.surfaceHi, padding: '10px 14px', borderRadius: 12, border: `1px solid ${D.border}`, gridColumn: 'span 2' }}>
+                        <div style={{ fontSize: '0.7rem', fontWeight: 700, color: D.textSub, textTransform: 'uppercase' }}>Email</div>
+                        <div style={{ fontSize: '0.88rem', fontWeight: 800, color: D.text, marginTop: 2 }}>
+                          {driverObj?.email || 'N/A'}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Service Details in Drawer if available */}
+                {jobServices.length > 0 && (
+                  <div style={{ background: D.surface, borderRadius: 18, border: `1px solid ${D.border}`, padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 800, color: D.text, display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <Wrench size={16} color={D.gold} /> Recorded Service Details ({jobServices.length})
+                    </div>
+                    {jobServices.map(serv => {
+                      const isPending = serv.status === 'PENDING'
+                      const isRejected = serv.status === 'REJECTED'
+                      return (
+                        <div key={serv.id} style={{
+                          background: D.surfaceHi, borderRadius: 14, padding: '14px 16px',
+                          border: isPending ? '1.5px solid rgba(245,158,11,0.35)' : isRejected ? '1.5px solid rgba(239,68,68,0.35)' : '1.5px solid rgba(16,185,129,0.35)',
+                          display: 'flex', flexDirection: 'column', gap: 10
+                        }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                            <span style={{ fontWeight: 800, fontSize: '0.9rem', color: D.text, display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <Wrench size={14} color={D.gold} />
+                              {serv.serviceTypeDetail || SERVICE_TYPES.find(t => t.value === serv.serviceType)?.label || serv.serviceType}
+                            </span>
+                            <span style={{
+                              fontSize: '0.7rem', fontWeight: 800, padding: '3px 10px', borderRadius: 999,
+                              background: isPending ? 'rgba(245,158,11,0.15)' : isRejected ? 'rgba(239,68,68,0.15)' : 'rgba(16,185,129,0.15)',
+                              color: isPending ? '#d97706' : isRejected ? '#ef4444' : '#059669',
+                              border: isPending ? '1px solid rgba(245,158,11,0.3)' : isRejected ? '1px solid rgba(239,68,68,0.3)' : '1px solid rgba(16,185,129,0.3)'
+                            }}>
+                              {isPending ? 'PENDING APPROVAL' : isRejected ? 'REJECTED' : 'APPROVED'}
+                            </span>
+                          </div>
+
+                          <div style={{ fontSize: '0.78rem', color: D.textSub, display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+                            <span>Service Date: <strong>{fmtDate(serv.serviceDate)}</strong></span>
+                            <span>Cost: <strong style={{ color: D.text }}>Rs. {Number(serv.serviceCost || 0).toLocaleString()}</strong></span>
+                            <span>Mileage: <strong>{Number(serv.currentMileageKm || 0).toLocaleString()} km</strong></span>
+                            <span>Workshop: <strong>{serv.technicianWorkshop || 'N/A'}</strong></span>
+                            {serv.createdBy && <span>By: <strong>@{serv.createdBy}</strong></span>}
+                          </div>
+
+                          {serv.description && (
+                            <div style={{ fontSize: '0.76rem', color: D.textSub, fontStyle: 'italic', background: D.surface, padding: '6px 10px', borderRadius: 8, border: `1px solid ${D.border}` }}>
+                              "{serv.description}"
+                            </div>
+                          )}
+
+                          {/* Action Buttons for Service Record */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
+                            {serv.attachmentPath && (
+                              <button
+                                type="button"
+                                onClick={() => handleViewAttachmentInTrips(serv)}
+                                style={{
+                                  padding: '7px 12px', borderRadius: 8, background: '#3b82f6', color: '#fff',
+                                  border: 'none', fontWeight: 700, fontSize: '0.74rem', cursor: 'pointer',
+                                  display: 'inline-flex', alignItems: 'center', gap: 5
+                                }}
+                              >
+                                <Paperclip size={12} /> View Attachment
+                              </button>
+                            )}
+
+                            {/* Controller Actions: Review / Edit, Approve, Reject */}
+                            {canManage && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => openEditServiceLog(serv, trip)}
+                                  disabled={busyId === serv.id}
+                                  style={{
+                                    padding: '7px 12px', borderRadius: 8, border: `1px solid ${D.border}`,
+                                    background: D.surface, color: D.text, fontSize: '0.76rem', fontWeight: 800,
+                                    cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5, transition: 'all 0.15s'
+                                  }}
+                                  onMouseEnter={e => e.currentTarget.style.background = D.surfaceHi}
+                                  onMouseLeave={e => e.currentTarget.style.background = D.surface}
+                                >
+                                  <Edit2 size={12} color="var(--primary)" /> Review / Edit Details
+                                </button>
+
+                                {isPending && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleApproveServiceInTrips(serv.id)}
+                                      disabled={busyId === serv.id}
+                                      style={{
+                                        padding: '7px 14px', borderRadius: 8, border: 'none',
+                                        background: 'linear-gradient(135deg, #059669, #10b981)', color: '#fff',
+                                        fontSize: '0.76rem', fontWeight: 800, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5,
+                                        boxShadow: '0 3px 10px rgba(16,185,129,0.3)'
+                                      }}
+                                    >
+                                      {busyId === serv.id ? <Loader2 size={12} className="spin" /> : <Check size={12} />} Approve
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRejectServiceInTrips(serv.id)}
+                                      disabled={busyId === serv.id}
+                                      style={{
+                                        padding: '7px 14px', borderRadius: 8, border: '1px solid rgba(239,68,68,0.3)',
+                                        background: 'rgba(239,68,68,0.1)', color: '#ef4444',
+                                        fontSize: '0.76rem', fontWeight: 800, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5
+                                      }}
+                                    >
+                                      {busyId === serv.id ? <Loader2 size={12} className="spin" /> : <X size={12} />} Reject
+                                    </button>
+                                  </>
+                                )}
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteServiceInTrips(serv.id)}
+                                  disabled={busyId === serv.id}
+                                  title="Delete Service Record"
+                                  style={{
+                                    padding: '7px 10px', borderRadius: 8, border: 'none',
+                                    background: D.redDim, color: D.red, fontSize: '0.76rem', fontWeight: 800,
+                                    cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 'auto'
+                                  }}
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              </>
+                            )}
+
+                            {/* Driver can edit their pending submission */}
+                            {!canManage && isPending && (
+                              <button
+                                type="button"
+                                onClick={() => openEditServiceLog(serv, trip)}
+                                disabled={busyId === serv.id}
+                                style={{
+                                  padding: '7px 12px', borderRadius: 8, border: `1px solid ${D.border}`,
+                                  background: D.surface, color: D.text, fontSize: '0.76rem', fontWeight: 800,
+                                  cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5
+                                }}
+                              >
+                                <Edit2 size={12} color="var(--primary)" /> Edit Submission
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {/* Fuel Details in Drawer if available */}
+                {jobFuelLogs.length > 0 && (
+                  <div style={{ background: D.surface, borderRadius: 18, border: `1px solid ${D.border}`, padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 800, color: D.text, display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <Fuel size={16} color="#10b981" /> Recorded Fuel Fill-Up Details ({jobFuelLogs.length})
+                    </div>
+                    {jobFuelLogs.map(log => {
+                      const isPending = log.status === 'PENDING'
+                      const isRejected = log.status === 'REJECTED'
+                      return (
+                        <div key={log.id} style={{
+                          background: D.surfaceHi, borderRadius: 14, padding: '14px 16px',
+                          border: isPending ? '1.5px solid rgba(245,158,11,0.35)' : isRejected ? '1.5px solid rgba(239,68,68,0.35)' : '1.5px solid rgba(16,185,129,0.35)',
+                          display: 'flex', flexDirection: 'column', gap: 10
+                        }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                            <span style={{ fontWeight: 800, fontSize: '0.9rem', color: D.text, display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <Fuel size={14} color="#10b981" /> {formatFuelType(log.fuelType)}
+                            </span>
+                            <span style={{
+                              fontSize: '0.7rem', fontWeight: 800, padding: '3px 10px', borderRadius: 999,
+                              background: isPending ? 'rgba(245,158,11,0.15)' : isRejected ? 'rgba(239,68,68,0.15)' : 'rgba(16,185,129,0.15)',
+                              color: isPending ? '#d97706' : isRejected ? '#ef4444' : '#059669',
+                              border: isPending ? '1px solid rgba(245,158,11,0.3)' : isRejected ? '1px solid rgba(239,68,68,0.3)' : '1px solid rgba(16,185,129,0.3)'
+                            }}>
+                              {isPending ? 'PENDING APPROVAL' : isRejected ? 'REJECTED' : 'APPROVED'}
+                            </span>
+                          </div>
+
+                          <div style={{ fontSize: '0.78rem', color: D.textSub, display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+                            <span>Date: <strong>{fmtDate(log.date)}</strong></span>
+                            <span>Quantity: <strong>{log.liters} L</strong></span>
+                            <span>Cost/L: <strong>Rs. {Number(log.costPerLiter || 0).toFixed(2)}</strong></span>
+                            <span>Total Cost: <strong style={{ color: '#10b981' }}>Rs. {Number(log.totalCost || 0).toLocaleString()}</strong></span>
+                            <span>Mileage: <strong>{Number(log.mileage || 0).toLocaleString()} km</strong></span>
+                            {log.fuelEfficiency != null && log.fuelEfficiency > 0 && (
+                              <span>Consumption: <strong style={{ color: '#10b981' }}>{Number(log.fuelEfficiency).toFixed(1)} km/L</strong></span>
+                            )}
+                            {log.driverUsername && <span>By: <strong>@{log.driverUsername}</strong></span>}
+                          </div>
+
+                          {/* Controller & Driver Actions for Fuel Record */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
+                            {canManage && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => openEditFuelLog(log, trip)}
+                                  disabled={busyId === log.id}
+                                  style={{
+                                    padding: '7px 12px', borderRadius: 8, border: `1px solid ${D.border}`,
+                                    background: D.surface, color: D.text, fontSize: '0.76rem', fontWeight: 800,
+                                    cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5, transition: 'all 0.15s'
+                                  }}
+                                  onMouseEnter={e => e.currentTarget.style.background = D.surfaceHi}
+                                  onMouseLeave={e => e.currentTarget.style.background = D.surface}
+                                >
+                                  <Edit2 size={12} color="var(--primary)" /> Review / Edit Details
+                                </button>
+
+                                {isPending && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleApproveFuelInTrips(log.id)}
+                                      disabled={busyId === log.id}
+                                      style={{
+                                        padding: '7px 14px', borderRadius: 8, border: 'none',
+                                        background: 'linear-gradient(135deg, #059669, #10b981)', color: '#fff',
+                                        fontSize: '0.76rem', fontWeight: 800, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5,
+                                        boxShadow: '0 3px 10px rgba(16,185,129,0.3)'
+                                      }}
+                                    >
+                                      {busyId === log.id ? <Loader2 size={12} className="spin" /> : <Check size={12} />} Approve
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRejectFuelInTrips(log.id)}
+                                      disabled={busyId === log.id}
+                                      style={{
+                                        padding: '7px 14px', borderRadius: 8, border: '1px solid rgba(239,68,68,0.3)',
+                                        background: 'rgba(239,68,68,0.1)', color: '#ef4444',
+                                        fontSize: '0.76rem', fontWeight: 800, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5
+                                      }}
+                                    >
+                                      {busyId === log.id ? <Loader2 size={12} className="spin" /> : <X size={12} />} Reject
+                                    </button>
+                                  </>
+                                )}
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteFuelInTrips(log.id)}
+                                  disabled={busyId === log.id}
+                                  title="Delete Fuel Record"
+                                  style={{
+                                    padding: '7px 10px', borderRadius: 8, border: 'none',
+                                    background: D.redDim, color: D.red, fontSize: '0.76rem', fontWeight: 800,
+                                    cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 'auto'
+                                  }}
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              </>
+                            )}
+
+                            {!canManage && isPending && (
+                              <button
+                                type="button"
+                                onClick={() => openEditFuelLog(log, trip)}
+                                disabled={busyId === log.id}
+                                style={{
+                                  padding: '7px 12px', borderRadius: 8, border: `1px solid ${D.border}`,
+                                  background: D.surface, color: D.text, fontSize: '0.76rem', fontWeight: 800,
+                                  cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5
+                                }}
+                              >
+                                <Edit2 size={12} color="var(--primary)" /> Edit Submission
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Drawer Footer Actions */}
+              <div style={{ padding: '18px 28px', background: D.surfaceHi, borderTop: `1px solid ${D.border}`, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                {canManage && type === 'SERVICE' && !hasAnyServiceRecordForTrip(trip, allServices) && (s === 'ASSIGNED' || s === 'STARTED') && (
+                  <button
+                    onClick={() => {
+                      setSelectedJobDetail(null)
+                      openServiceLog(trip)
+                    }}
+                    style={{
+                      flex: 1, minWidth: 150, padding: '10px 16px', borderRadius: 12, border: 'none',
+                      background: 'linear-gradient(135deg,#f59e0b,#d97706)', color: '#fff',
+                      fontSize: '0.85rem', fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                      boxShadow: '0 4px 12px rgba(245,158,11,0.35)'
+                    }}
+                  >
+                    <Wrench size={14} /> Add Service Record
+                  </button>
+                )}
+
+                {canManage && s === 'ASSIGNED' && (
+                  <button
+                    onClick={() => {
+                      const jobType = getJobType(trip.purpose)
+                      setActiveTab(jobType)
+                      setEditingTripId(trip.id)
+                      setEditingTripStatus(trip.status || '')
+                      setForm({
+                        driverUsername: trip.driverUsername || '',
+                        vehicleRegNumber: trip.vehicleRegNumber || '',
+                        origin: trip.origin || '',
+                        destination: trip.destination || '',
+                        purpose: getCleanPurpose(trip.purpose) || '',
+                        scheduledDate: trip.scheduledDate ? trip.scheduledDate.split('T')[0] : '',
+                        allowDriverServiceLog: hasDriverServiceAccess(trip),
+                      })
+                      setSelectedJobDetail(null)
+                      setShowAssignModal(true)
+                    }}
+                    style={{
+                      flex: 1, minWidth: 100, padding: '10px 16px', borderRadius: 12, border: 'none',
+                      background: 'linear-gradient(135deg, var(--primary-dark), var(--primary))', color: '#fff',
+                      fontSize: '0.85rem', fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                      boxShadow: '0 4px 12px var(--primary-glow)'
+                    }}
+                  >
+                    <Edit2 size={14} /> Edit
+                  </button>
+                )}
+
+                {canManage && (s === 'ASSIGNED' || s === 'STARTED') && (
+                  <button
+                    onClick={() => {
+                      setSelectedJobDetail(null)
+                      setTripToCancel(trip)
+                    }}
+                    style={{
+                      flex: 1, minWidth: 100, padding: '10px 16px', borderRadius: 12, border: `1px solid ${D.red}40`,
+                      background: D.redDim, color: D.red, fontSize: '0.85rem', fontWeight: 800,
+                      cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6
+                    }}
+                  >
+                    <Ban size={14} /> Cancel
+                  </button>
+                )}
+
+                {canManage && (
+                  <button
+                    onClick={() => {
+                      setSelectedJobDetail(null)
+                      setDeleteConfirmTrip(trip)
+                    }}
+                    style={{
+                      flex: 1, minWidth: 100, padding: '10px 16px', borderRadius: 12, border: '1px solid rgba(239,68,68,0.25)',
+                      background: 'rgba(239,68,68,0.1)', color: '#ef4444', fontSize: '0.85rem', fontWeight: 800,
+                      cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6
+                    }}
+                  >
+                    <Trash2 size={14} /> Delete
+                  </button>
+                )}
+
+                {/* Driver Actions inside Drawer */}
+                {!canManage && s === 'ASSIGNED' && (
+                  <>
+                    <button
+                      onClick={() => {
+                        if (hasActiveStartedJob) {
+                          flash('error', 'You already have an active job in progress. Please complete it before accepting another job.')
+                          return
+                        }
+                        setSelectedJobDetail(null)
+                        setDriverModal({ action: 'start', trip })
+                      }}
+                      disabled={hasActiveStartedJob}
+                      style={{
+                        flex: 1, minWidth: 110, padding: '10px 16px', borderRadius: 12,
+                        border: hasActiveStartedJob ? `1px solid ${D.border}` : 'none',
+                        background: hasActiveStartedJob ? D.surfaceHi : 'linear-gradient(135deg,#059669,#10b981)',
+                        color: hasActiveStartedJob ? D.textSub : '#fff',
+                        fontSize: '0.85rem', fontWeight: 800,
+                        cursor: hasActiveStartedJob ? 'not-allowed' : 'pointer',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                        boxShadow: hasActiveStartedJob ? 'none' : '0 4px 12px rgba(16,185,129,0.35)'
+                      }}
+                      title={hasActiveStartedJob ? "Complete your in-progress job first" : "Accept Job"}
+                    >
+                      <Play size={14} /> Accept
+                    </button>
+                    <button
+                      onClick={() => {
+                        setSelectedJobDetail(null)
+                        setDriverModal({ action: 'decline', trip })
+                      }}
+                      style={{
+                        flex: 1, minWidth: 110, padding: '10px 16px', borderRadius: 12, border: `1px solid ${D.red}40`,
+                        background: D.redDim, color: D.red, fontSize: '0.85rem', fontWeight: 800,
+                        cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6
+                      }}
+                    >
+                      <X size={14} /> Decline
+                    </button>
+                  </>
+                )}
+
+                {!canManage && s === 'STARTED' && (
+                  <>
+                    {type === 'SERVICE' && (
+                      <button
+                        onClick={() => {
+                          setSelectedJobDetail(null)
+                          openServiceLog(trip)
+                        }}
+                        style={{
+                          flex: 1, minWidth: 140, padding: '10px 16px', borderRadius: 12, border: 'none',
+                          background: 'linear-gradient(135deg,#f59e0b,#d97706)', color: '#fff',
+                          fontSize: '0.85rem', fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                          boxShadow: '0 4px 12px rgba(245,158,11,0.35)'
+                        }}
+                      >
+                        <CheckCircle size={14} /> Complete & Enter Details
+                      </button>
+                    )}
+
+                    {type === 'FUEL' && (
+                      <button
+                        onClick={() => {
+                          setSelectedJobDetail(null)
+                          openFuelLog(trip)
+                        }}
+                        style={{
+                          flex: 1, minWidth: 140, padding: '10px 16px', borderRadius: 12, border: 'none',
+                          background: 'linear-gradient(135deg,#059669,#10b981)', color: '#fff',
+                          fontSize: '0.85rem', fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                          boxShadow: '0 4px 12px rgba(16,185,129,0.35)'
+                        }}
+                      >
+                        <CheckCircle size={14} /> Complete & Enter Details
+                      </button>
+                    )}
+
+                    {type === 'TRIP' && (
+                      <>
+                        <button
+                          onClick={() => {
+                            setSelectedJobDetail(null)
+                            openFuelLog(trip)
+                          }}
+                          style={{
+                            flex: 1, minWidth: 100, padding: '10px 16px', borderRadius: 12, border: `1px solid ${D.border}`,
+                            background: D.surfaceHi, color: D.text, fontSize: '0.85rem', fontWeight: 800,
+                            cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6
+                          }}
+                        >
+                          <Fuel size={14} color="#10b981" /> Log Fuel
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSelectedJobDetail(null)
+                            setDriverModal({ action: 'complete', trip })
+                          }}
+                          style={{
+                            flex: 1, minWidth: 110, padding: '10px 16px', borderRadius: 12, border: 'none',
+                            background: 'linear-gradient(135deg, var(--primary-dark), var(--primary))', color: '#fff',
+                            fontSize: '0.85rem', fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                            boxShadow: '0 4px 12px var(--primary-glow)'
+                          }}
+                        >
+                          <CheckCircle size={14} /> Complete Trip
+                        </button>
+                      </>
+                    )}
+                  </>
+                )}
+
+                <button
+                  onClick={() => setSelectedJobDetail(null)}
+                  style={{
+                    flex: 1, minWidth: 90, padding: '10px 16px', borderRadius: 12, border: `1px solid ${D.border}`,
+                    background: 'transparent', color: D.text, fontSize: '0.85rem', fontWeight: 800, cursor: 'pointer'
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* ── Deleted Jobs Drawer ─────────────────────────────────── */}
+      {deletedDrawer && (
+        <div
+          onClick={() => { setDeletedDrawer(false); setDeletedDetail(null) }}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+            backdropFilter: 'blur(6px)', zIndex: 1200,
+            animation: 'fadeIn 0.18s ease',
+          }}
+        >
+          {/* Drawer panel */}
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              position: 'fixed', top: 0, right: 0, bottom: 0,
+              width: '100%', maxWidth: 700,
+              background: D.bg, display: 'flex', flexDirection: 'column',
+              boxShadow: '-20px 0 60px rgba(0,0,0,0.4)',
+              animation: 'slideInRight 0.28s cubic-bezier(0.22,1,0.36,1)',
+              borderLeft: `1px solid ${D.border}`,
+            }}
+          >
+            {/* Drawer Header */}
+            <div style={{
+              background: 'linear-gradient(135deg,#7f1d1d 0%,#991b1b 45%,#dc2626 100%)',
+              padding: '22px 28px', display: 'flex', alignItems: 'center',
+              justifyContent: 'space-between', flexShrink: 0, gap: 16,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <div style={{
+                  width: 48, height: 48, borderRadius: 12,
+                  background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.2)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff',
+                }}>
+                  <Archive size={24} />
+                </div>
+                <div>
+                  <h2 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 800, color: '#fff', fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
+                    Deleted Jobs
+                  </h2>
+                  <p style={{ margin: '3px 0 0', fontSize: '0.8rem', color: 'rgba(255,255,255,0.7)' }}>
+                    Soft-deleted jobs are preserved — not permanently removed
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => { setDeletedDrawer(false); setDeletedDetail(null) }}
+                style={{
+                  background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.2)',
+                  borderRadius: 8, cursor: 'pointer', color: '#fff',
+                  padding: '7px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Drawer Body */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: '28px' }}>
+              {loadingDeleted ? (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '200px', color: D.indigo }}>
+                  <Loader2 className="spin" size={28} />
+                </div>
+              ) : deletedTrips.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '60px 0', color: D.textSub }}>
+                  <ClipboardList size={40} opacity={0.3} style={{ marginBottom: 12 }} />
+                  <div style={{ fontWeight: 700, color: D.text }}>No deleted jobs found</div>
+                  <div style={{ fontSize: '0.85rem' }}>Deleted jobs will appear here.</div>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                  {deletedTrips.map(trip => {
+                    const type = getJobType(trip.purpose)
+                    const cleanPurpose = getCleanPurpose(trip.purpose)
+                    const s = up(trip.status)
+                    const isRestoring = restoringId === trip.id
+
+                    return (
+                      <div key={trip.id} style={{
+                        background: D.surface, border: `1px solid ${D.border}`,
+                        borderRadius: 16, padding: '18px 22px', display: 'flex',
+                        justifyContent: 'space-between', alignItems: 'center', gap: 16
+                      }}>
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                            <span style={{ fontWeight: 800, fontSize: '0.9rem', color: D.text }}>{trip.destination}</span>
+                            <span style={{ fontSize: '0.7rem', fontWeight: 800, padding: '3px 8px', borderRadius: 6, background: D.surfaceHi, color: D.textSub, border: `1px solid ${D.border}` }}>
+                              {type}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: '0.78rem', color: D.textSub }}>
+                            Driver: <strong>{trip.driverUsername}</strong> | Vehicle: <strong>{trip.vehicleRegNumber}</strong>
+                          </div>
+                          {cleanPurpose && (
+                            <div style={{ fontSize: '0.78rem', color: D.textSub, marginTop: 4, fontStyle: 'italic' }}>
+                              "{cleanPurpose}"
+                            </div>
+                          )}
+                          {trip.deletedBy && (
+                            <div style={{ fontSize: '0.72rem', color: D.red, marginTop: 6, fontWeight: 600 }}>
+                              Deleted by {trip.deletedBy} on {fmtDate(trip.deletedAt)}
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => handleRestoreTrip(trip.id)}
+                          disabled={isRestoring}
+                          style={{
+                            background: D.indigoDim, color: D.indigo, border: 'none',
+                            padding: '8px 14px', borderRadius: 10, fontSize: '0.78rem',
+                            fontWeight: 800, cursor: isRestoring ? 'not-allowed' : 'pointer',
+                            display: 'flex', alignItems: 'center', gap: 6, transition: 'all 0.2s'
+                          }}
+                          onMouseEnter={e => { if (!isRestoring) e.currentTarget.style.background = D.indigo; e.currentTarget.style.color = '#fff'; }}
+                          onMouseLeave={e => { if (!isRestoring) e.currentTarget.style.background = D.indigoDim; e.currentTarget.style.color = D.indigo; }}
+                        >
+                          {isRestoring ? <Loader2 size={13} className="spin" /> : <UserCheck size={13} />}
+                          Restore
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Service Log Modal (driver submits service details for approval) ─── */}
+      {serviceLogModal && (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1200, padding: 20, animation: 'fadeIn 0.2s ease' }}
+          onClick={closeServiceLog}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{ background: D.surface, borderRadius: 24, width: '94%', maxWidth: 600, maxHeight: '92vh', boxShadow: '0 32px 100px rgba(0,0,0,0.6)', border: `1px solid ${D.border}`, animation: 'scaleIn 0.28s cubic-bezier(0.16,1,0.3,1)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
+          >
+            {/* Header */}
+            <div style={{ background: canManage ? 'linear-gradient(135deg, #92400e 0%, #b45309 45%, #d97706 100%)' : 'linear-gradient(135deg, #065f46 0%, #047857 45%, #10b981 100%)', padding: '20px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <div style={{ width: 44, height: 44, borderRadius: 12, background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', flexShrink: 0 }}>
+                  <Wrench size={20} />
+                </div>
+                <div>
+                  <h2 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 900, color: '#fff', fontFamily: "'Plus Jakarta Sans', sans-serif", letterSpacing: '-0.02em' }}>
+                    {serviceLogForm.id ? 'Edit Pending Service Details' : (getJobType(serviceLogModal?.purpose) === 'SERVICE' ? 'Complete Service Job — Enter Details' : 'Log Service Details')}
+                  </h2>
+                  <p style={{ margin: '3px 0 0', fontSize: '0.76rem', color: 'rgba(255,255,255,0.78)', fontWeight: 500 }}>
+                    Job #{serviceLogModal?.id} · {serviceLogModal?.vehicleRegNumber} — {getJobType(serviceLogModal?.purpose) === 'SERVICE' ? 'Fill out service details to complete job (Awaiting controller approval)' : 'Awaiting controller approval'}
+                  </p>
+                </div>
+              </div>
+              <button onClick={closeServiceLog} style={{ background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 10, padding: 8, color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Approval notice */}
+            <div style={{
+              margin: '16px 24px 0', padding: '10px 14px', borderRadius: 10,
+              background: canManage ? 'rgba(245,158,11,0.1)' : 'rgba(16,185,129,0.1)',
+              border: canManage ? '1.5px solid rgba(245,158,11,0.3)' : '1.5px solid rgba(16,185,129,0.3)',
+              display: 'flex', alignItems: 'flex-start', gap: 10
+            }}>
+              <Clock size={15} color={canManage ? '#f59e0b' : '#10b981'} style={{ flexShrink: 0, marginTop: 1 }} />
+              <span style={{ fontSize: '0.76rem', color: canManage ? '#92400e' : D.green, fontWeight: 600, lineHeight: 1.5 }}>
+                {getJobType(serviceLogModal?.purpose) === 'SERVICE'
+                  ? 'Submit the service record details below to complete this service job. Records will be reviewed by the Fleet Controller before approval.'
+                  : 'These details will be submitted for Fleet Controller review and committed only after approval.'}
+              </span>
+            </div>
+
+            {/* Error */}
+            {serviceLogError && (
+              <div style={{ margin: '12px 24px 0', padding: '10px 14px', borderRadius: 10, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#ef4444', fontSize: '0.82rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <AlertTriangle size={15} /> {serviceLogError}
+              </div>
+            )}
+
+            {/* Form */}
+            <form onSubmit={handleServiceLogSubmit} style={{ overflowY: 'auto', flex: 1, padding: '20px 24px 24px' }} noValidate>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+
+                {/* Vehicle (read-only) */}
+                <div>
+                  <label style={labelStyle}>Vehicle (License Plate)</label>
+                  <input
+                    value={serviceLogForm.vehicleRegNumber}
+                    readOnly
+                    style={{ ...inputStyle, background: D.surfaceHi, color: D.textSub, cursor: 'default' }}
+                  />
+                </div>
+
+                {/* Service Type */}
+                <div>
+                  <label style={labelStyle}>Service Type *</label>
+                  <select
+                    value={serviceLogForm.serviceType}
+                    onChange={e => setServiceLogForm(f => ({ ...f, serviceType: e.target.value }))}
+                    style={{ ...inputStyle, appearance: 'none', cursor: 'pointer' }}
+                    onFocus={onFocus} onBlur={onBlur}
+                  >
+                    <option value="">Select type…</option>
+                    {SERVICE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                  </select>
+                </div>
+
+                {serviceLogForm.serviceType === 'OTHER' && (
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <label style={labelStyle}>Service Type Detail *</label>
+                    <input
+                      value={serviceLogForm.serviceTypeDetail}
+                      onChange={e => setServiceLogForm(f => ({ ...f, serviceTypeDetail: e.target.value }))}
+                      placeholder="Describe the service…"
+                      style={inputStyle} onFocus={onFocus} onBlur={onBlur}
+                    />
+                  </div>
+                )}
+
+                {/* Date */}
+                <div>
+                  <label style={labelStyle}>Service Date *</label>
+                  <input
+                    type="date"
+                    value={serviceLogForm.serviceDate}
+                    max={new Date().toISOString().split('T')[0]}
+                    onChange={e => setServiceLogForm(f => ({ ...f, serviceDate: e.target.value }))}
+                    style={inputStyle} onFocus={onFocus} onBlur={onBlur}
+                  />
+                </div>
+
+                {/* Mileage */}
+                <div>
+                  <label style={labelStyle}>
+                    Current Mileage (km) *
+                    {vehicleCurrentMileage != null && (
+                      <span style={{ marginLeft: 6, color: '#10b981', fontWeight: 800, fontSize: '0.74rem' }}>
+                        (Current: {Number(vehicleCurrentMileage).toLocaleString()} km)
+                      </span>
+                    )}
+                  </label>
+                  <input
+                    type="number"
+                    value={serviceLogForm.currentMileageKm}
+                    onChange={e => setServiceLogForm(f => ({ ...f, currentMileageKm: e.target.value }))}
+                    placeholder={vehicleCurrentMileage != null ? `Current: ${vehicleCurrentMileage} km` : 'e.g. 45000'}
+                    style={inputStyle} onFocus={onFocus} onBlur={onBlur}
+                  />
+                  {vehicleCurrentMileage != null && (
+                    <p style={{ margin: '6px 0 0', fontSize: '0.74rem', fontWeight: 700, color: '#10b981', display: 'flex', alignItems: 'center', gap: 5 }}>
+                      <Gauge size={13} /> Current Odometer: <strong>{Number(vehicleCurrentMileage).toLocaleString()} km</strong>
+                    </p>
+                  )}
+                </div>
+
+                {/* Cost */}
+                <div>
+                  <label style={labelStyle}>Service Cost (Rs.) *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={serviceLogForm.serviceCost}
+                    onChange={e => setServiceLogForm(f => ({ ...f, serviceCost: e.target.value }))}
+                    placeholder="e.g. 8500"
+                    style={inputStyle} onFocus={onFocus} onBlur={onBlur}
+                  />
+                </div>
+
+                {/* Workshop */}
+                <div>
+                  <label style={labelStyle}>Technician / Workshop *</label>
+                  <input
+                    value={serviceLogForm.technicianWorkshop}
+                    onChange={e => setServiceLogForm(f => ({ ...f, technicianWorkshop: e.target.value }))}
+                    placeholder="e.g. Auto Care Center"
+                    style={inputStyle} onFocus={onFocus} onBlur={onBlur}
+                  />
+                </div>
+
+                {/* Notes */}
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <label style={labelStyle}>Notes / Description</label>
+                  <textarea
+                    value={serviceLogForm.description}
+                    onChange={e => setServiceLogForm(f => ({ ...f, description: e.target.value }))}
+                    rows={2}
+                    placeholder="Any additional notes about the service…"
+                    style={{ ...inputStyle, resize: 'none', lineHeight: 1.5 }} onFocus={onFocus} onBlur={onBlur}
+                  />
+                </div>
+
+                {/* Optional: Next service due */}
+                <div>
+                  <label style={labelStyle}>Next Service Due (Date)</label>
+                  <input type="date" value={serviceLogForm.nextServiceDue} onChange={e => setServiceLogForm(f => ({ ...f, nextServiceDue: e.target.value }))} style={inputStyle} onFocus={onFocus} onBlur={onBlur} />
+                </div>
+                <div>
+                  <label style={labelStyle}>Next Service Due (km)</label>
+                  <input type="number" value={serviceLogForm.nextServiceMileageKm} onChange={e => setServiceLogForm(f => ({ ...f, nextServiceMileageKm: e.target.value }))} placeholder="e.g. 50000" style={inputStyle} onFocus={onFocus} onBlur={onBlur} />
+                </div>
+
+                {/* Attachment */}
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <label style={labelStyle}><span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Paperclip size={12} /> Bill / Receipt Attachment <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: D.textSub }}>(optional)</span></span></label>
+                  <label style={{
+                    display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer',
+                    border: `1.5px dashed ${serviceLogFile ? '#10b981' : D.inputBorder}`,
+                    borderRadius: 12, padding: '10px 14px',
+                    background: serviceLogFile ? 'rgba(16,185,129,0.06)' : D.inputBg,
+                    transition: 'all 0.15s',
+                  }}>
+                    <Paperclip size={15} color={serviceLogFile ? '#10b981' : D.textSub} />
+                    <span style={{ fontSize: '0.8rem', color: serviceLogFile ? '#10b981' : D.textSub, flex: 1 }}>
+                      {serviceLogFile ? serviceLogFile.name : 'Click to attach a bill, invoice or photo (PDF, JPG, PNG — max 10MB)'}
+                    </span>
+                    {serviceLogFile && (
+                      <button type="button" onClick={e => { e.preventDefault(); setServiceLogFile(null) }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: D.textSub, padding: 0, display: 'flex' }}>
+                        <X size={14} />
+                      </button>
+                    )}
+                    <input type="file" accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => setServiceLogFile(e.target.files[0] || null)} />
+                  </label>
+                </div>
+
+              </div>
+
+              {/* Actions */}
+              <div style={{ display: 'flex', gap: 12 }}>
+                <button type="submit" disabled={serviceLogSubmitting} style={{
+                  flex: 1, padding: '13px', borderRadius: 14, border: 'none',
+                  background: serviceLogSubmitting ? 'rgba(0,0,0,0.3)' : (canManage ? 'linear-gradient(135deg, #f59e0b, #d97706)' : 'linear-gradient(135deg, #059669 0%, #10b981 100%)'),
+                  color: '#fff', cursor: serviceLogSubmitting ? 'not-allowed' : 'pointer',
+                  fontSize: '0.92rem', fontWeight: 800, boxShadow: serviceLogSubmitting ? 'none' : (canManage ? '0 6px 20px rgba(245,158,11,0.4)' : '0 6px 20px rgba(16,185,129,0.35)'),
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontFamily: 'inherit',
+                  opacity: serviceLogSubmitting ? 0.7 : 1,
+                }}>
+                  {serviceLogSubmitting ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
+                  {serviceLogSubmitting ? 'Saving…' : serviceLogForm.id ? 'Save & Notify Controller' : (getJobType(serviceLogModal?.purpose) === 'SERVICE' ? 'Submit Details & Complete Job' : 'Submit for Approval')}
+                </button>
+                <button type="button" onClick={closeServiceLog} disabled={serviceLogSubmitting} style={{
+                  flex: 0.5, padding: '13px', borderRadius: 14, border: `1px solid ${D.border}`,
+                  background: 'transparent', color: D.text, cursor: serviceLogSubmitting ? 'not-allowed' : 'pointer',
+                  fontSize: '0.92rem', fontWeight: 800, fontFamily: 'inherit', transition: 'all 0.2s',
+                }}
+                  onMouseEnter={e => { if (!serviceLogSubmitting) e.currentTarget.style.background = D.surfaceHi }}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Fuel Log Modal (driver submits fuel fill-up details for TRIP or FUEL job) ─── */}
+      {fuelLogModal && (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1200, padding: 20, animation: 'fadeIn 0.2s ease' }}
+          onClick={closeFuelLog}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{ background: D.surface, borderRadius: 24, width: '94%', maxWidth: 580, maxHeight: '92vh', boxShadow: '0 32px 100px rgba(0,0,0,0.6)', border: `1px solid ${D.border}`, animation: 'scaleIn 0.28s cubic-bezier(0.16,1,0.3,1)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
+          >
+            {/* Header */}
+            <div style={{ background: 'linear-gradient(135deg, #065f46 0%, #047857 45%, #10b981 100%)', padding: '20px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <div style={{ width: 44, height: 44, borderRadius: 12, background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', flexShrink: 0 }}>
+                  <Fuel size={20} />
+                </div>
+                <div>
+                  <h2 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 900, color: '#fff', fontFamily: "'Plus Jakarta Sans', sans-serif", letterSpacing: '-0.02em' }}>
+                    {getJobType(fuelLogModal?.purpose) === 'FUEL' ? 'Complete Fuel Job — Enter Details' : 'Log Fuel Details'}
+                  </h2>
+                  <p style={{ margin: '3px 0 0', fontSize: '0.76rem', color: 'rgba(255,255,255,0.78)', fontWeight: 500 }}>
+                    Job #{fuelLogModal?.id} · {fuelLogModal?.vehicleRegNumber} — {getJobType(fuelLogModal?.purpose) === 'FUEL' ? 'Submit fuel information to complete job (Awaiting controller approval)' : 'Record fuel fill-up (Awaiting controller approval)'}
+                  </p>
+                </div>
+              </div>
+              <button onClick={closeFuelLog} style={{ background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 10, padding: 8, color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Notice */}
+            <div style={{ margin: '16px 24px 0', padding: '10px 14px', borderRadius: 10, background: 'rgba(16,185,129,0.1)', border: '1.5px solid rgba(16,185,129,0.3)', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+              <Fuel size={15} color="#10b981" style={{ flexShrink: 0, marginTop: 1 }} />
+              <span style={{ fontSize: '0.76rem', color: D.green, fontWeight: 600, lineHeight: 1.5 }}>
+                {getJobType(fuelLogModal?.purpose) === 'FUEL'
+                  ? 'Record fuel quantity, cost per liter, and current vehicle odometer reading to complete this fuel job (requires Controller approval).'
+                  : 'Record fuel quantity, cost per liter, and current vehicle odometer reading for this trip (requires Controller approval).'}
+              </span>
+            </div>
+
+            {/* Error */}
+            {fuelLogError && (
+              <div style={{ margin: '12px 24px 0', padding: '10px 14px', borderRadius: 10, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#ef4444', fontSize: '0.82rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <AlertTriangle size={15} /> {fuelLogError}
+              </div>
+            )}
+
+            {/* Form */}
+            <form onSubmit={handleFuelLogSubmit} style={{ overflowY: 'auto', flex: 1, padding: '20px 24px 24px' }} noValidate>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+
+                {/* Vehicle (read-only) */}
+                <div>
+                  <label style={labelStyle}>Vehicle (License Plate)</label>
+                  <input
+                    value={fuelLogForm.vehicleRegNumber}
+                    readOnly
+                    style={{ ...inputStyle, background: D.surfaceHi, color: D.textSub, cursor: 'default' }}
+                  />
+                </div>
+
+                {/* Fuel Type */}
+                <div>
+                  <label style={labelStyle}>Fuel Type *</label>
+                  <select
+                    value={fuelLogForm.fuelType}
+                    onChange={e => setFuelLogForm(f => ({ ...f, fuelType: e.target.value }))}
+                    style={{ ...inputStyle, appearance: 'none', cursor: 'pointer' }}
+                    onFocus={onFocus} onBlur={onBlur}
+                  >
+                    <option value="Auto Diesel">Auto Diesel</option>
+                    <option value="Super Diesel">Super Diesel</option>
+                    <option value="Petrol 92 Octane">Petrol 92 Octane</option>
+                    <option value="Petrol 95 Octane">Petrol 95 Octane</option>
+                    <option value="Diesel">Diesel</option>
+                    <option value="Petrol">Petrol</option>
+                    <option value="Hybrid">Hybrid</option>
+                    <option value="Electric">Electric</option>
+                  </select>
+                </div>
+
+                {/* Liters */}
+                <div>
+                  <label style={labelStyle}>Fuel Quantity (Liters) *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="e.g. 45.5"
+                    value={fuelLogForm.liters}
+                    onChange={e => {
+                      const liters = e.target.value
+                      const costPerLiter = fuelLogForm.costPerLiter
+                      const totalCost = (liters && costPerLiter) ? (parseFloat(liters) * parseFloat(costPerLiter)).toFixed(2) : fuelLogForm.totalCost
+                      setFuelLogForm(f => ({ ...f, liters, totalCost }))
+                    }}
+                    style={inputStyle} onFocus={onFocus} onBlur={onBlur}
+                  />
+                </div>
+
+                {/* Cost Per Liter */}
+                <div>
+                  <label style={labelStyle}>Cost Per Liter (Rs.) *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="e.g. 370.00"
+                    value={fuelLogForm.costPerLiter}
+                    onChange={e => {
+                      const costPerLiter = e.target.value
+                      const liters = fuelLogForm.liters
+                      const totalCost = (liters && costPerLiter) ? (parseFloat(liters) * parseFloat(costPerLiter)).toFixed(2) : fuelLogForm.totalCost
+                      setFuelLogForm(f => ({ ...f, costPerLiter, totalCost }))
+                    }}
+                    style={inputStyle} onFocus={onFocus} onBlur={onBlur}
+                  />
+                </div>
+
+                {/* Total Cost */}
+                <div>
+                  <label style={labelStyle}>Total Cost (Rs.)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    placeholder="e.g. 16835.00"
+                    value={fuelLogForm.totalCost || (fuelLogForm.liters && fuelLogForm.costPerLiter ? (parseFloat(fuelLogForm.liters) * parseFloat(fuelLogForm.costPerLiter)).toFixed(2) : '')}
+                    onChange={e => setFuelLogForm(f => ({ ...f, totalCost: e.target.value }))}
+                    style={inputStyle} onFocus={onFocus} onBlur={onBlur}
+                  />
+                </div>
+
+                {/* Current Mileage */}
+                <div>
+                  <label style={labelStyle}>
+                    Current Mileage (km) *
+                    {fuelVehicleMileage != null && (
+                      <span style={{ marginLeft: 6, color: '#10b981', fontWeight: 800, fontSize: '0.74rem' }}>
+                        (Current: {Number(fuelVehicleMileage).toLocaleString()} km)
+                      </span>
+                    )}
+                  </label>
+                  <input
+                    type="number"
+                    value={fuelLogForm.mileage}
+                    onChange={e => setFuelLogForm(f => ({ ...f, mileage: e.target.value }))}
+                    placeholder={fuelVehicleMileage != null ? `Current: ${fuelVehicleMileage} km` : 'e.g. 53000'}
+                    style={inputStyle} onFocus={onFocus} onBlur={onBlur}
+                  />
+                </div>
+
+                {/* Date */}
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <label style={labelStyle}>Date *</label>
+                  <input
+                    type="date"
+                    value={fuelLogForm.date}
+                    max={new Date().toISOString().split('T')[0]}
+                    onChange={e => setFuelLogForm(f => ({ ...f, date: e.target.value }))}
+                    style={inputStyle} onFocus={onFocus} onBlur={onBlur}
+                  />
+                </div>
+              </div>
+
+              {/* Submit / Discard buttons */}
+              <div style={{ display: 'flex', gap: 12, marginTop: 12 }}>
+                <button
+                  type="button"
+                  disabled={fuelLogSubmitting}
+                  onClick={closeFuelLog}
+                  style={{
+                    flex: 1, padding: '13px', borderRadius: 14, border: `1px solid ${D.border}`,
+                    background: 'transparent', color: D.text, fontSize: '0.92rem', fontWeight: 800,
+                    cursor: fuelLogSubmitting ? 'not-allowed' : 'pointer', fontFamily: 'inherit', transition: 'all 0.2s'
+                  }}
+                  onMouseEnter={e => { if (!fuelLogSubmitting) e.currentTarget.style.background = D.surfaceHi }}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                >
+                  Discard
+                </button>
+                <button
+                  type="submit"
+                  disabled={fuelLogSubmitting}
+                  style={{
+                    flex: 2, padding: '13px', borderRadius: 14, border: 'none',
+                    background: 'linear-gradient(135deg, #059669 0%, #10b981 100%)',
+                    color: '#fff', fontSize: '0.92rem', fontWeight: 800,
+                    cursor: fuelLogSubmitting ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
+                    boxShadow: '0 8px 24px rgba(16,185,129,0.35)', opacity: fuelLogSubmitting ? 0.7 : 1,
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8
+                  }}
+                >
+                  {fuelLogSubmitting ? <Loader2 size={17} className="spin" /> : <Fuel size={17} />}
+                  {fuelLogSubmitting ? 'Saving Fuel Details…' : (getJobType(fuelLogModal?.purpose) === 'FUEL' ? 'Submit Details & Complete Job' : 'Submit Fuel Log')}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Pending Service Details Modal (Controller) ─── */}
+      {pendingDetailModal && (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1300, padding: 20, animation: 'fadeIn 0.2s ease' }}
+          onClick={() => setPendingDetailModal(null)}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{ background: D.surface, borderRadius: 24, width: '94%', maxWidth: 580, maxHeight: '90vh', boxShadow: '0 32px 100px rgba(0,0,0,0.6)', border: `1px solid ${D.border}`, animation: 'scaleIn 0.28s cubic-bezier(0.16,1,0.3,1)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
+          >
+            {/* Header */}
+            <div style={{ background: 'linear-gradient(135deg, #92400e 0%, #b45309 45%, #d97706 100%)', padding: '20px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <div style={{ width: 44, height: 44, borderRadius: 12, background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}>
+                  <Wrench size={20} />
+                </div>
+                <div>
+                  <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 900, color: '#fff', fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+                    {pendingDetailModal.serviceTypeDetail || SERVICE_TYPES.find(t => t.value === pendingDetailModal.serviceType)?.label || pendingDetailModal.serviceType}
+                  </h2>
+                  <p style={{ margin: '3px 0 0', fontSize: '0.78rem', color: 'rgba(255,255,255,0.8)', fontWeight: 500 }}>
+                    Vehicle: {pendingDetailModal.vehicleRegNumber} — {pendingDetailModal.status === 'PENDING' ? 'Pending Controller Approval' : 'Service Record Details'}
+                  </p>
+                </div>
+              </div>
+              <button onClick={() => setPendingDetailModal(null)} style={{ background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 10, padding: 8, color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div style={{ padding: '24px', overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 18 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                <div style={{ background: D.surfaceHi, padding: '12px 16px', borderRadius: 14, border: `1px solid ${D.border}` }}>
+                  <div style={{ fontSize: '0.7rem', color: D.textSub, fontWeight: 700, textTransform: 'uppercase' }}>Vehicle</div>
+                  <div style={{ fontSize: '0.92rem', fontWeight: 800, color: D.text, marginTop: 3 }}>{pendingDetailModal.vehicleRegNumber}</div>
+                </div>
+                <div style={{ background: D.surfaceHi, padding: '12px 16px', borderRadius: 14, border: `1px solid ${D.border}` }}>
+                  <div style={{ fontSize: '0.7rem', color: D.textSub, fontWeight: 700, textTransform: 'uppercase' }}>Submitted By</div>
+                  <div style={{ fontSize: '0.92rem', fontWeight: 800, color: D.text, marginTop: 3 }}>{pendingDetailModal.createdBy || 'Driver'}</div>
+                </div>
+                <div style={{ background: D.surfaceHi, padding: '12px 16px', borderRadius: 14, border: `1px solid ${D.border}` }}>
+                  <div style={{ fontSize: '0.7rem', color: D.textSub, fontWeight: 700, textTransform: 'uppercase' }}>Service Date</div>
+                  <div style={{ fontSize: '0.92rem', fontWeight: 800, color: D.text, marginTop: 3 }}>{fmtDate(pendingDetailModal.serviceDate)}</div>
+                </div>
+                <div style={{ background: D.surfaceHi, padding: '12px 16px', borderRadius: 14, border: `1px solid ${D.border}` }}>
+                  <div style={{ fontSize: '0.7rem', color: D.textSub, fontWeight: 700, textTransform: 'uppercase' }}>Mileage</div>
+                  <div style={{ fontSize: '0.92rem', fontWeight: 800, color: D.text, marginTop: 3 }}>{Number(pendingDetailModal.currentMileageKm || 0).toLocaleString()} km</div>
+                </div>
+                <div style={{ background: D.surfaceHi, padding: '12px 16px', borderRadius: 14, border: `1px solid ${D.border}` }}>
+                  <div style={{ fontSize: '0.7rem', color: D.textSub, fontWeight: 700, textTransform: 'uppercase' }}>Service Cost</div>
+                  <div style={{ fontSize: '0.92rem', fontWeight: 800, color: D.text, marginTop: 3 }}>Rs. {Number(pendingDetailModal.serviceCost || 0).toLocaleString()}</div>
+                </div>
+                <div style={{ background: D.surfaceHi, padding: '12px 16px', borderRadius: 14, border: `1px solid ${D.border}` }}>
+                  <div style={{ fontSize: '0.7rem', color: D.textSub, fontWeight: 700, textTransform: 'uppercase' }}>Technician / Workshop</div>
+                  <div style={{ fontSize: '0.92rem', fontWeight: 800, color: D.text, marginTop: 3 }}>{pendingDetailModal.technicianWorkshop || 'N/A'}</div>
+                </div>
+              </div>
+
+              {pendingDetailModal.description && (
+                <div style={{ background: D.surfaceHi, padding: '14px 16px', borderRadius: 14, border: `1px solid ${D.border}` }}>
+                  <div style={{ fontSize: '0.7rem', color: D.textSub, fontWeight: 700, textTransform: 'uppercase', marginBottom: 4 }}>Notes / Description</div>
+                  <div style={{ fontSize: '0.88rem', color: D.text, lineHeight: 1.5 }}>{pendingDetailModal.description}</div>
+                </div>
+              )}
+
+              {/* Attachment button */}
+              {pendingDetailModal.attachmentPath && (
+                <div style={{ background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)', padding: '14px 16px', borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <Paperclip size={18} color="#3b82f6" />
+                    <div>
+                      <div style={{ fontSize: '0.85rem', fontWeight: 800, color: D.text }}>Receipt / Invoice Attachment</div>
+                      <div style={{ fontSize: '0.75rem', color: D.textSub }}>File attached with record</div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleViewAttachmentInTrips(pendingDetailModal)}
+                    style={{ padding: '8px 14px', borderRadius: 10, background: '#3b82f6', color: '#fff', border: 'none', fontWeight: 800, fontSize: '0.8rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}
+                  >
+                    <Eye size={14} /> View File
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Footer Actions */}
+            {canManage && (
+              <div style={{ padding: '16px 24px', background: D.surfaceHi, borderTop: `1px solid ${D.border}`, display: 'flex', gap: 12 }}>
+                <button
+                  onClick={() => handleApproveServiceInTrips(pendingDetailModal.id)}
+                  disabled={busyId === pendingDetailModal.id}
+                  style={{ flex: 1, padding: '11px', borderRadius: 12, border: 'none', background: 'linear-gradient(135deg, #059669, #10b981)', color: '#fff', fontSize: '0.88rem', fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
+                >
+                  {busyId === pendingDetailModal.id ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
+                  Approve Record
+                </button>
+                <button
+                  onClick={() => handleRejectServiceInTrips(pendingDetailModal.id)}
+                  disabled={busyId === pendingDetailModal.id}
+                  style={{ flex: 1, padding: '11px', borderRadius: 12, border: '1px solid rgba(239,68,68,0.3)', background: 'rgba(239,68,68,0.1)', color: '#ef4444', fontSize: '0.88rem', fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
+                >
+                  {busyId === pendingDetailModal.id ? <Loader2 size={16} className="spin" /> : <X size={16} />}
+                  Reject Record
+                </button>
+                <button
+                  onClick={() => setPendingDetailModal(null)}
+                  style={{ flex: 0.5, padding: '11px', borderRadius: 12, border: `1px solid ${D.border}`, background: 'transparent', color: D.text, fontSize: '0.88rem', fontWeight: 800, cursor: 'pointer' }}
+                >
+                  Close
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        .spin { animation: spin 1s linear infinite; }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes scaleIn { from { opacity: 0; transform: scale(0.94); } to { opacity: 1; transform: scale(1); } }
+        @keyframes slideInRight { from { transform: translateX(100%); } to { transform: translateX(0); } }
+        @media (max-width: 900px) { .stats-grid { grid-template-columns: repeat(2, 1fr) !important; } }
+      `}</style>
+    </div>
+  )
+}
+
+const ActionBtn = ({ children, onClick, disabled, bg, color, border, icon, minWidth = 100, style = {} }) => (
+  <button
+    onClick={(e) => { e.stopPropagation(); onClick?.(e) }}
+    disabled={disabled}
+    style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 7,
+      minWidth: minWidth,
+      height: 38,
+      padding: '0 16px',
+      borderRadius: 10,
+      border: border || 'none',
+      background: bg,
+      color,
+      fontSize: '0.82rem',
+      fontWeight: 700,
+      cursor: disabled ? 'not-allowed' : 'pointer',
+      opacity: disabled ? 0.6 : 1,
+      fontFamily: 'inherit',
+      transition: 'all 0.18s ease',
+      whiteSpace: 'nowrap',
+      boxSizing: 'border-box',
+      lineHeight: 1,
+      ...style,
+    }}
+  >
+    {disabled ? <Loader2 size={14} className="spin" /> : icon}
+    {children}
+  </button>
+)
+
+export default TripsPage

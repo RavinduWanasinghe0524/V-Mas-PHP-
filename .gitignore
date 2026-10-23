@@ -1,0 +1,8 @@
+/V-Mas Frontend/node_modules/
+/V-Mas Frontend/dist/
+/V-Mas Frontend/.env
+/backend/.env
+/backend/storage/
+/.tools/
+*.log
+
