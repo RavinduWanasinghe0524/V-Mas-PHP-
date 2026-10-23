@@ -36,6 +36,8 @@ The SQL schema uses the original JPA table and column names. If you already have
 
 To try an existing Spring Boot database locally, set `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD` in `backend/.env` to that database's connection details. Do **not** import `schema.sql` or run `create-admin.php` against it. Run `php backend/bin/check-existing-db.php` first; this read-only check reports missing tables and columns. When it passes, start both local servers as above and sign in with an existing account. If the database is remote, its firewall must allow a connection from this computer. Existing uploaded files also need the corresponding storage configuration or files copied to `backend/storage`; database paths alone do not transfer the files. The checker verifies required columns, but a copy of the database should be used for write testing until its constraints and data values have been checked.
 
+The older local `vmas_db` schema can be copied to a separate database, then expanded with `backend/database/schema.sql` for missing tables and `backend/database/migrate-legacy-vmas.sql` for missing columns. The latter migration is specific to the older schema found during conversion and must only be run once on a backed-up copy. Run the checker again afterward. The original Spring Boot database does not need to be changed.
+
 ## Deployment
 
 Point the web server document root at `backend/public` and route all `/api/*` requests to `backend/public/index.php`. The included `.htaccess` handles this for Apache when overrides and `mod_rewrite` are enabled. Keep `backend/.env` and `backend/storage` outside public access. Set `APP_ENV=production`, `FRONTEND_URL`, `CORS_ALLOWED_ORIGINS`, and all required database/JWT variables in the server environment.
