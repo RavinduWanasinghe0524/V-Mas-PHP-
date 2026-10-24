@@ -24,6 +24,7 @@ try {
     require __DIR__ . '/../src/Fuel.php';
     require __DIR__ . '/../src/Services.php';
     require __DIR__ . '/../src/Misc.php';
+    require __DIR__ . '/../src/VehiclePasses.php';
     errorReply('Route not found', 404);
 } catch (ApiError $e) {
     errorReply($e->getMessage(), $e->status);
