@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    name: test-and-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pdo_mysql, curl, fileinfo, openssl
+          coverage: none
+
+      - name: Check PHP syntax
+        run: find backend -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: Run PHP smoke checks
+        run: php backend/tests/smoke.php
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: V-Mas Frontend/package-lock.json
+
+      - name: Check frontend API routes
+        run: node backend/tests/api-contract.mjs
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix 'V-Mas Frontend'
+
+      - name: Build frontend
+        run: npm run build --prefix 'V-Mas Frontend'
