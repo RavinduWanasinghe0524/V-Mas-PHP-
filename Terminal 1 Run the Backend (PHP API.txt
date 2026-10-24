@@ -1,0 +1,27 @@
+Terminal 1: Run the Backend (PHP API)
+Open PowerShell and navigate to the backend folder:
+
+powershell
+cd "d:\Software\Academic\Git Projects\V-Mas-PHP-\backend"
+Start the PHP built-in server:
+
+powershell
+& "C:\xampp\php\php.exe" -S 127.0.0.1:8000 router.php
+(If you add C:\xampp\php to your PATH, you can simply run: php -S 127.0.0.1:8000 router.php)
+
+The backend will be running at http://127.0.0.1:8000. You can test it by opening http://127.0.0.1:8000/api/health in your browser (it should return {"success":true,"message":"Success","data":{"status":"UP"}}).
+
+Terminal 2: Run the Frontend (Vite / React)
+Open a second PowerShell window and navigate to the frontend folder:
+powershell
+cd "d:\Software\Academic\Git Projects\V-Mas-PHP-\V-Mas Frontend"
+Start the Vite development server:
+powershell
+npm run dev
+Open your browser and go to: http://localhost:3000
+Logging In
+On the login screen, use the administrator credentials:
+
+Username / Email: admin
+Password: Admin@12345
+From the Admin dashboard, you can approve newly registered users, manage drivers, vehicles, trips, and service records.

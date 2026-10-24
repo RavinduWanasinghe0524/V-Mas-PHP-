@@ -5,21 +5,23 @@ import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
 import {
   LayoutDashboard, Truck, Wrench, Users, Fuel,
-  BarChart2, User, ChevronLeft, LogOut, ClipboardList,
+  BarChart2, User, ChevronLeft, LogOut, ClipboardList, Ticket,
 } from 'lucide-react'
 
 const navItems = {
   ADMIN: [
-    { label: 'Dashboard',     icon: <LayoutDashboard size={23} strokeWidth={1.5} />, to: '/dashboard'     },
-    { label: 'Vehicles',      icon: <Truck size={23} strokeWidth={1.5} />,           to: '/vehicles'      },
-    { label: 'Users',         icon: <Users size={23} strokeWidth={1.5} />,           to: '/users'         },
-    { label: 'Service',       icon: <Wrench size={23} strokeWidth={1.5} />,          to: '/service'       },
-    { label: 'Fuel Analysis', icon: <Fuel size={23} strokeWidth={1.5} />,            to: '/fuel-analysis' },
-    { label: 'Reports',       icon: <BarChart2 size={23} strokeWidth={1.5} />,       to: '/reports'       },
-    { label: 'My Profile',    icon: <User size={23} strokeWidth={1.5} />,            to: '/profile'       },
+    { label: 'Dashboard',      icon: <LayoutDashboard size={23} strokeWidth={1.5} />, to: '/dashboard'      },
+    { label: 'Vehicle Passes', icon: <Ticket size={23} strokeWidth={1.5} />,          to: '/vehicle-passes'   },
+    { label: 'Vehicles',       icon: <Truck size={23} strokeWidth={1.5} />,           to: '/vehicles'       },
+    { label: 'Users',          icon: <Users size={23} strokeWidth={1.5} />,           to: '/users'          },
+    { label: 'Service',        icon: <Wrench size={23} strokeWidth={1.5} />,          to: '/service'        },
+    { label: 'Fuel Analysis',  icon: <Fuel size={23} strokeWidth={1.5} />,            to: '/fuel-analysis'  },
+    { label: 'Reports',        icon: <BarChart2 size={23} strokeWidth={1.5} />,       to: '/reports'        },
+    { label: 'My Profile',     icon: <User size={23} strokeWidth={1.5} />,            to: '/profile'        },
   ],
   CONTROLLER: [
     { label: 'Dashboard',       icon: <LayoutDashboard size={23} strokeWidth={1.5} />, to: '/dashboard'       },
+    { label: 'Vehicle Passes',  icon: <Ticket size={23} strokeWidth={1.5} />,          to: '/vehicle-passes'   },
     { label: 'Vehicles',        icon: <Truck size={23} strokeWidth={1.5} />,           to: '/vehicles'        },
     { label: 'Job Management',  icon: <ClipboardList size={23} strokeWidth={1.5} />,   to: '/jobs'            },
     { label: 'Users',           icon: <Users size={23} strokeWidth={1.5} />,           to: '/users'           },
