@@ -20,6 +20,7 @@ const VehiclePassAdminPage = () => {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [statusFilter, setStatusFilter] = useState('ALL')
+  const [formTypeFilter, setFormTypeFilter] = useState('ALL')
   const [searchTerm, setSearchTerm] = useState('')
 
   // Reject modal state
@@ -100,39 +101,47 @@ const VehiclePassAdminPage = () => {
 
   // Print single pass slip
   const handlePrintSlip = (pass) => {
+    const isOutstation = pass.formType === 'SUSL/GA/TD/01'
     const printWindow = window.open('', '_blank')
     printWindow.document.write(`
       <html>
         <head>
-          <title>Vehicle Pass - ${pass.passCode}</title>
+          <title>${pass.formType || 'Pass'} - ${pass.passCode}</title>
           <style>
-            body { font-family: sans-serif; padding: 30px; color: #1e293b; }
-            .card { border: 2px solid #2563eb; border-radius: 12px; padding: 24px; max-width: 500px; margin: 0 auto; }
-            .header { text-align: center; border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; margin-bottom: 16px; }
-            .code { font-family: monospace; font-size: 24px; font-weight: bold; color: #2563eb; letter-spacing: 2px; }
-            .row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; }
-            .label { font-weight: bold; color: #64748b; }
+            body { font-family: sans-serif; padding: 30px; color: #1e293b; background: #fff; }
+            .card { border: 2px solid #1f3a5f; border-radius: 8px; padding: 24px; max-width: 620px; margin: 0 auto; }
+            .ref { float: right; font-weight: bold; border: 1.5px solid #000; padding: 2px 8px; font-size: 13px; }
+            .header { text-align: center; border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; margin-bottom: 16px; clear: both; }
+            .uni { font-size: 18px; font-weight: bold; margin: 0; }
+            .sub { font-size: 14px; color: #64748b; margin: 2px 0 10px; }
+            .title { font-size: 16px; font-weight: bold; text-decoration: underline; margin: 0 0 12px; }
+            .code { font-family: monospace; font-size: 22px; font-weight: bold; color: #1f3a5f; letter-spacing: 2px; }
+            .row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px; border-bottom: 1px dotted #e2e8f0; padding-bottom: 4px; }
+            .label { font-weight: bold; color: #475569; }
             .badge { display: inline-block; padding: 4px 12px; border-radius: 999px; font-weight: bold; font-size: 12px; background: #dcfce7; color: #166534; }
-            .footer { margin-top: 20px; text-align: center; font-size: 11px; color: #94a3b8; }
+            .footer { margin-top: 24px; text-align: center; font-size: 11px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 10px; }
           </style>
         </head>
         <body>
           <div class="card">
+            <span class="ref">${pass.formType || 'SUSL/GA/TD/03'}</span>
             <div class="header">
-              <h2>V-MAS GATE ENTRY PASS</h2>
+              <div class="uni">Sabaragamuwa University of Sri Lanka</div>
+              <div class="sub">General Administration Division</div>
+              <div class="title">${isOutstation ? 'Vehicle Gate Pass for Outstation Travel' : 'Staff Vehicle Identification Permit'}</div>
               <div class="code">${pass.passCode}</div>
-              <div style="margin-top: 8px;"><span class="badge">${pass.status}</span></div>
+              <div style="margin-top: 6px;"><span class="badge">${pass.status}</span></div>
             </div>
-            <div class="row"><span class="label">Applicant:</span><span>${pass.applicantName}</span></div>
-            <div class="row"><span class="label">Phone:</span><span>${pass.phoneNumber}</span></div>
-            <div class="row"><span class="label">Vehicle Plate:</span><span style="font-weight:bold;">${pass.vehicleRegNumber}</span></div>
+            <div class="row"><span class="label">Applicant Name:</span><span>${pass.applicantName}</span></div>
+            <div class="row"><span class="label">Phone / Contact:</span><span>${pass.phoneNumber}</span></div>
+            ${pass.nicNumber ? `<div class="row"><span class="label">NIC / ID:</span><span>${pass.nicNumber}</span></div>` : ''}
+            <div class="row"><span class="label">Vehicle Registration:</span><span style="font-weight:bold;">${pass.vehicleRegNumber}</span></div>
             <div class="row"><span class="label">Vehicle Type:</span><span>${pass.vehicleType}</span></div>
-            <div class="row"><span class="label">Pass Type:</span><span>${pass.passType}</span></div>
             <div class="row"><span class="label">Valid Dates:</span><span>${pass.startDate} ${pass.endDate ? 'to ' + pass.endDate : ''}</span></div>
-            <div class="row"><span class="label">Destination:</span><span>${pass.destination || 'Main Campus'}</span></div>
-            <div class="row"><span class="label">Purpose:</span><span>${pass.purpose}</span></div>
+            <div class="row"><span class="label">Department / Destination:</span><span>${pass.destination || 'University Premises'}</span></div>
+            <div class="row"><span class="label">Purpose / Notes:</span><span>${pass.purpose}</span></div>
             <div class="row"><span class="label">Authorized By:</span><span>${pass.approvedBy || 'Security Controller'}</span></div>
-            <div class="footer">Show this pass to security personnel upon arrival at the gate.</div>
+            <div class="footer">Sabaragamuwa University of Sri Lanka • Official Gate Entry Document</div>
           </div>
           <script>window.onload = function() { window.print(); }<\/script>
         </body>
@@ -144,6 +153,7 @@ const VehiclePassAdminPage = () => {
   // Filtered passes
   const filteredPasses = passes.filter(p => {
     const matchesStatus = statusFilter === 'ALL' || p.status === statusFilter
+    const matchesType = formTypeFilter === 'ALL' || (p.formType || 'SUSL/GA/TD/03') === formTypeFilter
     const term = searchTerm.toLowerCase()
     const matchesSearch = !term ||
       (p.applicantName?.toLowerCase().includes(term)) ||
@@ -151,7 +161,7 @@ const VehiclePassAdminPage = () => {
       (p.passCode?.toLowerCase().includes(term)) ||
       (p.phoneNumber?.toLowerCase().includes(term)) ||
       (p.destination?.toLowerCase().includes(term))
-    return matchesStatus && matchesSearch
+    return matchesStatus && matchesType && matchesSearch
   })
 
   // Stat counts
@@ -159,6 +169,7 @@ const VehiclePassAdminPage = () => {
   const pendingCount = passes.filter(p => p.status === 'PENDING').length
   const approvedCount = passes.filter(p => p.status === 'APPROVED').length
   const rejectedCount = passes.filter(p => p.status === 'REJECTED').length
+
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: D.bg, color: D.text }}>
@@ -248,6 +259,32 @@ const VehiclePassAdminPage = () => {
               ))}
             </div>
 
+            {/* Form Type Filter Tabs */}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+              <span style={{ fontSize: '0.76rem', color: D.textSub, fontWeight: 700 }}>FORM:</span>
+              {[
+                { id: 'ALL', label: 'All' },
+                { id: 'SUSL/GA/TD/03', label: 'Form 03 (Staff ID)' },
+                { id: 'SUSL/GA/TD/01', label: 'Form 01 (Outstation)' }
+              ].map(ft => (
+                <button
+                  key={ft.id}
+                  onClick={() => setFormTypeFilter(ft.id)}
+                  style={{
+                    padding: '0.4rem 0.8rem', borderRadius: 6,
+                    fontSize: '0.78rem', fontWeight: 600,
+                    border: `1px solid ${formTypeFilter === ft.id ? '#3b82f6' : D.border}`,
+                    cursor: 'pointer',
+                    background: formTypeFilter === ft.id ? 'rgba(59, 130, 246, 0.15)' : 'transparent',
+                    color: formTypeFilter === ft.id ? '#3b82f6' : D.textSub,
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  {ft.label}
+                </button>
+              ))}
+            </div>
+
             {/* Search Input */}
             <div style={{ position: 'relative', minWidth: 260 }}>
               <Search size={15} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: D.textSub }} />
@@ -300,8 +337,10 @@ const VehiclePassAdminPage = () => {
                           <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#3b82f6', background: 'rgba(59, 130, 246, 0.1)', padding: '4px 8px', borderRadius: 6 }}>
                             {pass.passCode}
                           </span>
-                          <div style={{ fontSize: '0.72rem', color: D.textSub, marginTop: 4 }}>
-                            {pass.passType}
+                          <div style={{ marginTop: 4, display: 'flex', gap: 4, alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.68rem', fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: pass.formType === 'SUSL/GA/TD/01' ? 'rgba(168, 85, 247, 0.15)' : 'rgba(59, 130, 246, 0.15)', color: pass.formType === 'SUSL/GA/TD/01' ? '#a855f7' : '#3b82f6' }}>
+                              {pass.formType || 'SUSL/GA/TD/03'}
+                            </span>
                           </div>
                         </td>
 

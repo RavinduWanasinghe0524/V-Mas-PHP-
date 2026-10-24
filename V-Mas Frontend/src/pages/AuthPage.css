@@ -1362,12 +1362,14 @@
   line-height: 1.15;
   color: #ffffff;
   margin-bottom: 1rem;
+  text-decoration: none;
 }
 
 .ag-hero-headline em {
   font-style: normal;
   color: #00c8f8;
   text-shadow: 0 0 12px rgba(0, 200, 248, 0.2);
+  text-decoration: none;
 }
 
 .ag-hero-sub {
@@ -1485,6 +1487,8 @@
   color: #EDF2FF;
   margin-bottom: 7px;
   text-align: center;
+  border-bottom: none !important;
+  text-decoration: none !important;
 }
 
 .ag-welcome-sub {

@@ -173,6 +173,7 @@ CREATE TABLE IF NOT EXISTS employees (
 
 CREATE TABLE IF NOT EXISTS vehicle_passes (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  form_type VARCHAR(50) NOT NULL DEFAULT 'SUSL/GA/TD/03',
   pass_code VARCHAR(50) NOT NULL UNIQUE,
   applicant_name VARCHAR(255) NOT NULL,
   phone_number VARCHAR(50) NOT NULL,
@@ -186,6 +187,7 @@ CREATE TABLE IF NOT EXISTS vehicle_passes (
   end_date DATE NULL,
   destination VARCHAR(255) NULL,
   purpose TEXT NOT NULL,
+  form_data LONGTEXT NULL,
   status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
   approved_by VARCHAR(100) NULL,
   rejection_reason TEXT NULL,
