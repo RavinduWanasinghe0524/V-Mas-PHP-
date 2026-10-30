@@ -12,7 +12,7 @@ import {
 } from 'lucide-react'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
-import { vehicleAPI, fuelAPI, serviceAPI, userAPI } from '../services/api'
+import { vehicleAPI, fuelAPI, serviceAPI, userAPI, vehiclePassAPI } from '../services/api'
 import { generateStyledExcel } from '../utils/excelExport'
 import { formatFuelType } from '../utils/fuelUtils'
 import ExcelJS from 'exceljs'
@@ -88,6 +88,19 @@ const ReportsPage = () => {
   const { user } = useAuth()
   const isDark = theme === 'blue'
   const userRole = user?.role || 'DRIVER'
+  const [passRecords, setPassRecords] = useState([])
+  useEffect(() => {
+    if (userRole === 'ADMIN' || userRole === 'CONTROLLER') vehiclePassAPI.getAll().then(r => setPassRecords(r.data?.data || [])).catch(() => setPassRecords([]))
+  }, [userRole])
+  const downloadPassReport = () => {
+    const columns = ['passCode', 'applicantName', 'faculty', 'department', 'vehicleRegNumber', 'status', 'createdAt', 'hodApprovedAt', 'deanApprovedAt']
+    const csv = [columns.join(','), ...passRecords.map(record => columns.map(key => `"${String(record[key] ?? '').replaceAll('"', '""')}"`).join(','))].join('\r\n')
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+    link.download = 'vehicle-pass-report.csv'
+    link.click()
+    URL.revokeObjectURL(link.href)
+  }
   const allowedIds = ROLE_ACCESS[userRole] || ROLE_ACCESS.DRIVER
 
   // ── Report type definitions ──────────────────────────────────────────────
@@ -1582,6 +1595,17 @@ const ReportsPage = () => {
 
 
 
+
+          {(userRole === 'ADMIN' || userRole === 'CONTROLLER') && <section style={{ background: D.surface, border: `1px solid ${D.border}`, borderRadius: 16, padding: 22, marginBottom: 26 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+              <div><h2 style={{ color: D.text, margin: 0 }}>Vehicle pass applications</h2><p style={{ color: D.textSub }}>{passRecords.length} records, including Head of Department and Dean approval status</p></div>
+              <button type="button" onClick={downloadPassReport} style={{ background: D.indigo, color: '#fff', border: 0, borderRadius: 10, padding: '10px 16px', cursor: 'pointer' }}>Download CSV</button>
+            </div>
+            <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', color: D.text, borderCollapse: 'collapse', textAlign: 'left' }}>
+              <thead><tr>{['Pass code', 'Applicant', 'Faculty', 'Department', 'Vehicle', 'Status'].map(label => <th key={label} style={{ padding: 10, borderBottom: `1px solid ${D.border}` }}>{label}</th>)}</tr></thead>
+              <tbody>{passRecords.map(record => <tr key={record.id}>{[record.passCode, record.applicantName, record.faculty, record.department, record.vehicleRegNumber, record.status].map((value, index) => <td key={index} style={{ padding: 10, borderBottom: `1px solid ${D.border}` }}>{value || '—'}</td>)}</tr>)}</tbody>
+            </table></div>
+          </section>}
 
           {/* ═══ Report Cards Section ══════════════════════════════════════ */}
           <SectionHeader

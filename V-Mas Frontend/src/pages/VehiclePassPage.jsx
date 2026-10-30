@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTheme } from '../context/ThemeContext'
 import logo from '../assets/V-MAS Logo.svg'
@@ -248,12 +248,14 @@ const VehiclePassPage = () => {
   }
 
   // Active View Tab: 'form03' (Staff Vehicle ID), 'form01' (Outstation Gate Pass), 'check' (Track Status)
-  const [activeTab, setActiveTab] = useState('form03')
+  const [activeTab, setActiveTab] = useState('select')
+  const [selectedFaculty, setSelectedFaculty] = useState('')
+  const [selectedDepartment, setSelectedDepartment] = useState('')
 
   // Form 03 State
   const initialF03 = {
     formType: 'SUSL/GA/TD/03',
-    name: '', desig: '', dept: '', status: 'perm',
+    name: '', desig: '', faculty: '', dept: '', status: 'perm',
     nic: '', mob: '', owner: '', vtype: '', reg: '',
     eng: '', chs: '', agree: false, sig1: '', d1: new Date().toISOString().split('T')[0]
   }
@@ -262,7 +264,7 @@ const VehiclePassPage = () => {
   // Form 01 State
   const initialF01 = {
     formType: 'SUSL/GA/TD/01',
-    name: '', tel: '', desig: '', dept: '', reason: '',
+    name: '', tel: '', desig: '', faculty: '', dept: '', reason: '',
     pax: '1', vt: '',
     passengers: [
       { name: '', desig: '' },
@@ -277,6 +279,8 @@ const VehiclePassPage = () => {
     agree: false, sig: '', sd: new Date().toISOString().split('T')[0]
   }
   const [f01, setF01] = useState(initialF01)
+  const [faculties, setFaculties] = useState({})
+  useEffect(() => { vehiclePassAPI.getFaculties().then(r => setFaculties(r.data?.data || {})).catch(() => setFaculties({})) }, [])
 
   // Common UI states
   const [submitting, setSubmitting] = useState(false)
@@ -298,7 +302,7 @@ const VehiclePassPage = () => {
     e.preventDefault()
     setFeedbackMsg({ text: '', type: '' })
 
-    if (!f03.name || !f03.desig || !f03.dept || !f03.nic || !f03.mob || !f03.owner || !f03.vtype || !f03.reg) {
+    if (!f03.name || !f03.desig || !f03.faculty || !f03.dept || !f03.nic || !f03.mob || !f03.owner || !f03.vtype || !f03.reg) {
       setFeedbackMsg({ text: curT3.bad, type: 'err' })
       return
     }
@@ -312,7 +316,7 @@ const VehiclePassPage = () => {
       const res = await vehiclePassAPI.apply(f03)
       if (res.data?.success && res.data?.data) {
         setResultPass(res.data.data)
-        setFeedbackMsg({ text: curT3.ok, type: 'ok' })
+        setFeedbackMsg({ text: res.data.message || curT3.ok, type: 'ok' })
       } else {
         setFeedbackMsg({ text: res.data?.message || 'Submission failed', type: 'err' })
       }
@@ -328,7 +332,7 @@ const VehiclePassPage = () => {
     e.preventDefault()
     setFeedbackMsg({ text: '', type: '' })
 
-    if (!f01.name || !f01.tel || !f01.desig || !f01.dept || !f01.reason || !f01.place || !f01.route) {
+    if (!f01.name || !f01.tel || !f01.desig || !f01.faculty || !f01.dept || !f01.reason || !f01.place || !f01.route) {
       setFeedbackMsg({ text: curT1.bad, type: 'err' })
       return
     }
@@ -342,7 +346,7 @@ const VehiclePassPage = () => {
       const res = await vehiclePassAPI.apply(f01)
       if (res.data?.success && res.data?.data) {
         setResultPass(res.data.data)
-        setFeedbackMsg({ text: curT1.ok, type: 'ok' })
+        setFeedbackMsg({ text: res.data.message || curT1.ok, type: 'ok' })
       } else {
         setFeedbackMsg({ text: res.data?.message || 'Submission failed', type: 'err' })
       }
@@ -434,12 +438,35 @@ const VehiclePassPage = () => {
         </div>
       </nav>
 
+      {activeTab === 'select' && <section className="susl-form-selector-wrap vp-selection-card">
+        <h1 style={{ marginTop: 0 }}>Select your faculty and department</h1>
+        <p style={{ color: 'var(--susl-muted)' }}>Choose where your application should be sent for approval.</p>
+        <label htmlFor="pass-faculty">Faculty</label>
+        <select id="pass-faculty" value={selectedFaculty} onChange={e => { setSelectedFaculty(e.target.value); setSelectedDepartment('') }}>
+          <option value="">Select faculty</option>{Object.keys(faculties).map(name => <option key={name} value={name}>{name}</option>)}
+        </select>
+        <label htmlFor="pass-department">Department</label>
+        <select id="pass-department" value={selectedDepartment} disabled={!selectedFaculty} onChange={e => setSelectedDepartment(e.target.value)}>
+          <option value="">Select department</option>{(faculties[selectedFaculty] || []).map(name => <option key={name} value={name}>{name}</option>)}
+        </select>
+        <button type="button" className="btn" disabled={!selectedDepartment} onClick={() => {
+          setF03(current => ({ ...current, faculty: selectedFaculty, dept: selectedDepartment }))
+          setF01(current => ({ ...current, faculty: selectedFaculty, dept: selectedDepartment }))
+          setActiveTab('form03')
+        }}>Continue to forms</button>
+        <button type="button" onClick={() => setActiveTab('check')} style={{ marginLeft: 12, background: 'none', border: 0, color: 'var(--susl-accent)', cursor: 'pointer' }}>Check an existing application</button>
+      </section>}
+
       {/* ── Two Form Options & Status Checker Tabs ── */}
+      {activeTab !== 'select' && <><div className="susl-form-selector-wrap" style={{ textAlign: 'center', color: 'var(--susl-muted)', paddingBottom: 0 }}>
+        <p>{selectedDepartment ? `${selectedFaculty} / ${selectedDepartment}` : 'Faculty and department'} <button type="button" onClick={() => setActiveTab('select')}>{selectedDepartment ? 'Change' : 'Select'}</button></p>
+      </div>
       <div className="susl-form-selector-wrap">
         <div className="susl-form-tabs">
           <button
             type="button"
             className={`susl-form-tab ${activeTab === 'form03' ? 'active' : ''}`}
+            disabled={!selectedDepartment}
             onClick={() => { setActiveTab('form03'); setResultPass(null); setFeedbackMsg({ text: '', type: '' }); }}
           >
             <Ticket size={16} />
@@ -451,6 +478,7 @@ const VehiclePassPage = () => {
           <button
             type="button"
             className={`susl-form-tab ${activeTab === 'form01' ? 'active' : ''}`}
+            disabled={!selectedDepartment}
             onClick={() => { setActiveTab('form01'); setResultPass(null); setFeedbackMsg({ text: '', type: '' }); }}
           >
             <Truck size={16} />
@@ -469,6 +497,7 @@ const VehiclePassPage = () => {
           </button>
         </div>
       </div>
+      </>}
 
       {/* ── SUCCESS NOTICE BANNER (if submitted) ── */}
       {resultPass && (
@@ -541,13 +570,8 @@ const VehiclePassPage = () => {
               />
             </div>
             <div>
-              <label htmlFor="f03-dept"><span className="n">1.3</span>{curT3.dept}</label>
-              <input
-                id="f03-dept"
-                required
-                value={f03.dept}
-                onChange={e => setF03({ ...f03, dept: e.target.value })}
-              />
+              <label><span className="n">1.3</span>Faculty / Department</label>
+              <p>{f03.faculty} / {f03.dept}</p>
             </div>
             <div className="full">
               <label id="stl-03"><span className="n">1.4</span>{curT3.status}</label>
@@ -718,7 +742,7 @@ const VehiclePassPage = () => {
               <Printer size={16} />
               <span>{curT3.print}</span>
             </button>
-            <button className="btn alt" type="button" onClick={() => setF03(initialF03)}>
+            <button className="btn alt" type="button" onClick={() => setF03({ ...initialF03, faculty: selectedFaculty, dept: selectedDepartment })}>
               <RotateCcw size={16} />
               <span>{curT3.reset}</span>
             </button>
@@ -775,13 +799,8 @@ const VehiclePassPage = () => {
               />
             </div>
             <div>
-              <label htmlFor="f01-dept"><span className="n">3</span>{curT1.dept}</label>
-              <input
-                id="f01-dept"
-                required
-                value={f01.dept}
-                onChange={e => setF01({ ...f01, dept: e.target.value })}
-              />
+              <label><span className="n">3</span>Faculty / Department</label>
+              <p>{f01.faculty} / {f01.dept}</p>
             </div>
 
             <div className="full">
@@ -1066,7 +1085,7 @@ const VehiclePassPage = () => {
               <Printer size={16} />
               <span>{curT1.print}</span>
             </button>
-            <button className="btn alt" type="button" onClick={() => setF01(initialF01)}>
+            <button className="btn alt" type="button" onClick={() => setF01({ ...initialF01, faculty: selectedFaculty, dept: selectedDepartment })}>
               <RotateCcw size={16} />
               <span>{curT1.reset}</span>
             </button>
