@@ -140,6 +140,37 @@
   padding: 0 16px;
 }
 
+.vp-page .vp-selection-card {
+  max-width: 620px;
+  margin-top: 3rem;
+  padding: 28px;
+  background: var(--susl-paper);
+  border: 1px solid var(--susl-line);
+  border-radius: 18px;
+}
+
+.vp-page .vp-selection-card label {
+  display: block;
+  font-weight: 700;
+}
+
+.vp-page .vp-selection-card select {
+  display: block;
+  width: 100%;
+  margin: 8px 0 22px;
+  padding: 12px 14px;
+  color: var(--susl-ink);
+  background: var(--susl-field);
+  border: 1px solid var(--susl-line);
+  border-radius: 8px;
+  font: inherit;
+}
+
+.vp-page .vp-selection-card select:focus-visible {
+  outline: 2px solid var(--susl-accent);
+  outline-offset: 2px;
+}
+
 .vp-page .susl-form-tabs {
   display: flex;
   background: var(--susl-paper);

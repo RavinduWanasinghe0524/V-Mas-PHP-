@@ -61,6 +61,12 @@ const VehiclePassAdminPage = () => {
       setProcessingId(null)
     }
   }
+  const handleResendApproval = async (pass) => {
+    setProcessingId(pass.id)
+    try { await vehiclePassAPI.resendApproval(pass.id); alert('Approval email sent') }
+    catch (err) { alert(err.response?.data?.message || 'Unable to send approval email') }
+    finally { setProcessingId(null) }
+  }
 
   // Open Reject Modal
   const openRejectModal = (pass) => {
@@ -166,7 +172,7 @@ const VehiclePassAdminPage = () => {
 
   // Stat counts
   const totalCount = passes.length
-  const pendingCount = passes.filter(p => p.status === 'PENDING').length
+  const pendingCount = passes.filter(p => p.status?.startsWith('PENDING')).length
   const approvedCount = passes.filter(p => p.status === 'APPROVED').length
   const rejectedCount = passes.filter(p => p.status === 'REJECTED').length
 
@@ -242,7 +248,7 @@ const VehiclePassAdminPage = () => {
           }}>
             {/* Status Filter Tabs */}
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {['ALL', 'PENDING', 'APPROVED', 'REJECTED'].map(st => (
+              {['ALL', 'PENDING_HOD', 'PENDING_DEAN', 'APPROVED', 'REJECTED'].map(st => (
                 <button
                   key={st}
                   onClick={() => setStatusFilter(st)}
@@ -393,6 +399,7 @@ const VehiclePassAdminPage = () => {
                         {/* Actions */}
                         <td style={{ padding: '1rem 1.2rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
                           <div style={{ display: 'inline-flex', gap: 6 }}>
+                            {pass.status?.startsWith('PENDING_') && <button type="button" disabled={processingId === pass.id} onClick={() => handleResendApproval(pass)} style={{ padding: '0.45rem 0.8rem', borderRadius: 8, border: `1px solid ${D.border}`, background: D.surfaceHi, color: D.text, cursor: 'pointer' }}>Resend email</button>}
                             {pass.status === 'PENDING' && (
                               <>
                                 <button
