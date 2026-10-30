@@ -252,14 +252,16 @@ function s3Request(string $method, string $key, string $content = '', string $mi
     return $response;
 }
 
-function sendEmail(string $to, string $subject, string $html): void {
+function sendEmail(string $to, string $subject, string $html): bool {
     $key = envv('SENDGRID_API_KEY', '');
-    if (!$key) return;
+    if (!$key) return false;
     $payload = json_encode(['personalizations' => [['to' => [['email' => $to]]]], 'from' => ['email' => envv('MAIL_FROM_EMAIL', ''), 'name' => envv('MAIL_FROM_NAME', 'V-MAS')], 'subject' => $subject, 'content' => [['type' => 'text/html', 'value' => $html]]]);
     $handle = curl_init('https://api.sendgrid.com/v3/mail/send');
     curl_setopt_array($handle, [CURLOPT_POST => true, CURLOPT_POSTFIELDS => $payload, CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $key, 'Content-Type: application/json'], CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 10]);
-    curl_exec($handle);
+    $result = curl_exec($handle);
+    $status = curl_getinfo($handle, CURLINFO_HTTP_CODE);
     curl_close($handle);
+    return $result !== false && $status >= 200 && $status < 300;
 }
 
 function sendSms(string $to, string $message): void {

@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import {
   Eye, EyeOff, User, Lock, LogIn, AlertCircle, UserPlus, Car, Settings,
-  Users, CheckCircle, ChevronDown, Clock, ArrowLeft, Mail, Sun, Moon
+  Users, CheckCircle, ChevronDown, Clock, ArrowLeft, Mail, Sun, Moon, Ticket
 } from 'lucide-react';
 import { getRoleLogo } from '../utils/roleAssets';
 import { authAPI } from '../services/api';
@@ -221,6 +221,33 @@ const LoginSlide = ({ onSwitch, onForgot, isActive }) => {
           Register
         </button>
       </p>
+
+      {/* Vehicle Pass CTA */}
+      <div className="ag-pass-divider">
+        <span className="ag-pass-divider-text">VISITOR & GATE ACCESS</span>
+      </div>
+
+      <div className="ag-pass-card">
+        <div className="ag-pass-card-content">
+          <div className="ag-pass-card-icon">
+            <Ticket size={17} />
+          </div>
+          <div className="ag-pass-card-text">
+            <span className="ag-pass-card-title">Need a Vehicle Pass?</span>
+            <span className="ag-pass-card-sub">No account needed • Public entry</span>
+          </div>
+        </div>
+        <button
+          type="button"
+          className="ag-pass-apply-btn"
+          onClick={() => navigate('/apply-pass')}
+          tabIndex={isActive ? 0 : -1}
+          id="btn-apply-pass"
+        >
+          <span>Apply Pass</span>
+          <span>→</span>
+        </button>
+      </div>
     </div>
   );
 };

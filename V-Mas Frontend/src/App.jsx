@@ -24,6 +24,9 @@ const LocationPage      = lazy(() => import('./pages/LocationPage'))
 const ReportsPage       = lazy(() => import('./pages/ReportsPage'))
 const TripsPage         = lazy(() => import('./pages/TripsPage'))
 const ResetPasswordPage = lazy(() => import('./pages/ResetPasswordPage'))
+const VehiclePassPage   = lazy(() => import('./pages/VehiclePassPage'))
+const VehiclePassApprovalPage = lazy(() => import('./pages/VehiclePassApprovalPage'))
+const VehiclePassAdminPage = lazy(() => import('./pages/VehiclePassAdminPage'))
 
 // ── Suspense fallback — matches the app's dark theme ─────────────────────
 const PageLoader = () => (
@@ -160,6 +163,10 @@ function App() {
                 <Route path="/login"            element={<AuthPage />} />
                 <Route path="/signup"           element={<AuthPage />} />
                 <Route path="/reset-password"   element={<ResetPasswordPage />} />
+                <Route path="/apply-pass"       element={<VehiclePassPage />} />
+                <Route path="/approve-pass"     element={<VehiclePassApprovalPage />} />
+                <Route path="/vehicle-pass"     element={<VehiclePassPage />} />
+                <Route path="/vehicle-passes"   element={<PrivateRoute><VehiclePassAdminPage /></PrivateRoute>} />
                 <Route path="/dashboard"        element={<PrivateRoute><DashboardPage /></PrivateRoute>} />
                 <Route path="/users"            element={<PrivateRoute><UsersPage /></PrivateRoute>} />
                 <Route path="/profile"          element={<PrivateRoute><ProfilePage /></PrivateRoute>} />

@@ -1362,12 +1362,14 @@
   line-height: 1.15;
   color: #ffffff;
   margin-bottom: 1rem;
+  text-decoration: none;
 }
 
 .ag-hero-headline em {
   font-style: normal;
   color: #00c8f8;
   text-shadow: 0 0 12px rgba(0, 200, 248, 0.2);
+  text-decoration: none;
 }
 
 .ag-hero-sub {
@@ -1485,6 +1487,8 @@
   color: #EDF2FF;
   margin-bottom: 7px;
   text-align: center;
+  border-bottom: none !important;
+  text-decoration: none !important;
 }
 
 .ag-welcome-sub {
@@ -1910,3 +1914,146 @@
 .theme-light .modern-sec-badge span {
   color: rgba(15, 23, 42, 0.45);
 }
+
+/* ── Vehicle Pass Banner / CTA on Auth Page ───────────────────────── */
+.ag-pass-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 1.1rem 0 0.9rem;
+  position: relative;
+  width: 100%;
+}
+
+.ag-pass-divider::before,
+.ag-pass-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.theme-light .ag-pass-divider::before,
+.theme-light .ag-pass-divider::after {
+  background: rgba(15, 23, 42, 0.1);
+}
+
+.ag-pass-divider-text {
+  padding: 0 0.8rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.ag-pass-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  padding: 0.85rem 1rem;
+  background: rgba(30, 41, 59, 0.45);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: 14px;
+  margin-bottom: 0.8rem;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+}
+
+.theme-light .ag-pass-card {
+  background: #f8fafc;
+  border-color: rgba(37, 99, 235, 0.25);
+  box-shadow: 0 4px 15px rgba(15, 23, 42, 0.05);
+}
+
+.ag-pass-card:hover {
+  border-color: rgba(59, 130, 246, 0.5);
+  background: rgba(30, 41, 59, 0.7);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(37, 99, 235, 0.15);
+}
+
+.theme-light .ag-pass-card:hover {
+  background: #ffffff;
+  border-color: #2563eb;
+  box-shadow: 0 6px 20px rgba(37, 99, 235, 0.1);
+}
+
+.ag-pass-card-content {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.ag-pass-card-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: rgba(37, 99, 235, 0.18);
+  color: #60a5fa;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.theme-light .ag-pass-card-icon {
+  background: rgba(37, 99, 235, 0.1);
+  color: #2563eb;
+}
+
+.ag-pass-card-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ag-pass-card-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #f1f5f9;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.theme-light .ag-pass-card-title {
+  color: #0f172a;
+}
+
+.ag-pass-card-sub {
+  font-size: 0.7rem;
+  color: #94a3b8;
+  margin-top: 1px;
+}
+
+.theme-light .ag-pass-card-sub {
+  color: #64748b;
+}
+
+.ag-pass-apply-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.85rem;
+  border-radius: 9px;
+  border: none;
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  color: #ffffff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
+}
+
+.ag-pass-apply-btn:hover {
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.45);
+}

@@ -194,4 +194,18 @@ export const alertAPI = {
   getDashboardAlerts:   ()               => api.get('/alerts/dashboard'),
 }
 
+export const vehiclePassAPI = {
+  getFaculties: () => api.get('/vehicle-passes/faculties'),
+  getApproval: (token) => api.get(`/vehicle-passes/approval/${encodeURIComponent(token)}`),
+  decideApproval: (token, decision) => api.post(`/vehicle-passes/approval/${encodeURIComponent(token)}`, { decision }),
+  resendApproval: (id) => api.post(`/vehicle-passes/${id}/resend-approval`),
+  apply:        (data)       => api.post('/vehicle-passes/apply', data),
+  checkStatus:  (code)       => api.get(`/vehicle-passes/check/${encodeURIComponent(code)}`),
+  getAll:       (status)     => api.get('/vehicle-passes', { params: status ? { status } : {} }),
+  getById:      (id)         => api.get(`/vehicle-passes/${id}`),
+  updateStatus: (id, data)   => api.patch(`/vehicle-passes/${id}/status`, data),
+  delete:       (id)         => api.delete(`/vehicle-passes/${id}`),
+}
+
 export default api
+

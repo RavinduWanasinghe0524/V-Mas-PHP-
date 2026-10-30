@@ -170,3 +170,37 @@ CREATE TABLE IF NOT EXISTS employees (
   last_name VARCHAR(255) NOT NULL,
   email_id VARCHAR(255) NOT NULL UNIQUE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS vehicle_passes (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  form_type VARCHAR(50) NOT NULL DEFAULT 'SUSL/GA/TD/03',
+  faculty VARCHAR(100) NOT NULL,
+  department VARCHAR(150) NOT NULL,
+  pass_code VARCHAR(50) NOT NULL UNIQUE,
+  applicant_name VARCHAR(255) NOT NULL,
+  phone_number VARCHAR(50) NOT NULL,
+  email VARCHAR(255) NULL,
+  nic_number VARCHAR(50) NULL,
+  vehicle_reg_number VARCHAR(50) NOT NULL,
+  vehicle_type VARCHAR(50) NOT NULL DEFAULT 'CAR',
+  vehicle_model VARCHAR(100) NULL,
+  pass_type VARCHAR(50) NOT NULL DEFAULT 'VISITOR',
+  start_date DATE NOT NULL,
+  end_date DATE NULL,
+  destination VARCHAR(255) NULL,
+  purpose TEXT NOT NULL,
+  form_data LONGTEXT NULL,
+  status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+  approval_token_hash CHAR(64) NULL,
+  approval_token_expires_at DATETIME NULL,
+  hod_approved_at DATETIME NULL,
+  dean_approved_at DATETIME NULL,
+  approved_by VARCHAR(100) NULL,
+  rejection_reason TEXT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NULL,
+  INDEX idx_pass_code (pass_code),
+  INDEX idx_pass_vehicle (vehicle_reg_number),
+  INDEX idx_pass_status (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
