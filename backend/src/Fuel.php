@@ -29,10 +29,12 @@ function fuelOwned(array $log, array $user): bool {
 function fuelValues(array $data): array {
     $reg = (string)requireField($data, 'vehicleRegNumber'); vehicleByReg($reg);
     foreach (['fuelType', 'liters', 'costPerLiter', 'mileage'] as $field) requireField($data, $field);
-    if ((float)$data['liters'] <= 0 || (float)$data['costPerLiter'] < 0 || (float)$data['mileage'] < 0) fail('Invalid fuel quantities');
+    if (!is_numeric($data['liters']) || (float)$data['liters'] <= 0 || !is_numeric($data['costPerLiter']) || (float)$data['costPerLiter'] < 0 || !is_numeric($data['mileage']) || (float)$data['mileage'] < 0) fail('Invalid fuel quantities');
     $values = fields($data, FUEL_FIELDS);
-    $values['total_cost'] = !empty($values['total_cost']) ? $values['total_cost'] : round((float)$values['liters'] * (float)$values['cost_per_liter'], 2);
+    $values['total_cost'] = round((float)$values['liters'] * (float)$values['cost_per_liter'], 2);
     $values['date'] ??= date('Y-m-d');
+    $parsedDate = DateTimeImmutable::createFromFormat('!Y-m-d', (string)$values['date']);
+    if (!$parsedDate || $parsedDate->format('Y-m-d') !== $values['date']) fail('Invalid fuel date');
     $latest = row('SELECT mileage FROM fuel_logs WHERE vehicle_reg_number = ? AND COALESCE(is_deleted, 0) = 0 ORDER BY date DESC, id DESC LIMIT 1', [$reg]);
     if ($latest && (float)$values['mileage'] < (float)$latest['mileage']) fail('Mileage cannot be lower than the previous fuel log');
     return $values;
@@ -63,17 +65,31 @@ route('GET', '/api/fuel/my-logs/{id}', function ($p) {
     reply(fuelDto($log));
 });
 route('PUT', '/api/fuel/my-logs/{id}', function ($p) {
-    $user = actor(); $id = (int)$p['id']; $log = byId('fuel_logs', $id);
-    if (!fuelOwned($log, $user)) fail('Access denied', 403);
-    $data = body(); $changes = fields($data, FUEL_FIELDS);
-    unset($changes['driver_username']);
-    if (isset($changes['liters']) || isset($changes['cost_per_liter'])) $changes['total_cost'] = round((float)($changes['liters'] ?? $log['liters']) * (float)($changes['cost_per_liter'] ?? $log['cost_per_liter']), 2);
+    $user = requireRole('DRIVER'); $id = (int)$p['id']; $log = byId('fuel_logs', $id);
+    if ($log['driver_username'] !== $user['user_name']) fail('You can only edit your own fuel logs', 403);
+    $data = body();
+    $changes = fields($data, ['fuel_type', 'liters', 'cost_per_liter', 'mileage', 'date']);
+    $fuelType = trim((string)($changes['fuel_type'] ?? $log['fuel_type']));
+    $liters = $changes['liters'] ?? $log['liters'];
+    $costPerLiter = $changes['cost_per_liter'] ?? $log['cost_per_liter'];
+    $mileage = $changes['mileage'] ?? $log['mileage'];
+    $date = (string)($changes['date'] ?? $log['date']);
+    $parsedDate = DateTimeImmutable::createFromFormat('!Y-m-d', $date);
+    if ($fuelType === '' || !is_numeric($liters) || (float)$liters <= 0 || !is_numeric($costPerLiter) || (float)$costPerLiter < 0 || !is_numeric($mileage) || (float)$mileage < 0 || !$parsedDate || $parsedDate->format('Y-m-d') !== $date) fail('Invalid fuel log values');
+    $previous = row('SELECT mileage FROM fuel_logs WHERE vehicle_reg_number = ? AND COALESCE(is_deleted, 0) = 0 AND id <> ? AND (date < ? OR (date = ? AND id < ?)) ORDER BY date DESC, id DESC LIMIT 1', [$log['vehicle_reg_number'], $id, $date, $date, $id]);
+    $next = row('SELECT mileage FROM fuel_logs WHERE vehicle_reg_number = ? AND COALESCE(is_deleted, 0) = 0 AND id <> ? AND (date > ? OR (date = ? AND id > ?)) ORDER BY date, id LIMIT 1', [$log['vehicle_reg_number'], $id, $date, $date, $id]);
+    if (($previous && (float)$mileage < (float)$previous['mileage']) || ($next && (float)$mileage > (float)$next['mileage'])) fail('Mileage must fit between the previous and next fuel logs');
+    $changes['total_cost'] = round((float)$liters * (float)$costPerLiter, 2);
     $changes += ['is_updated' => 1, 'updated_at' => now(), 'updated_by' => $user['user_name'], 'status' => 'PENDING'];
     updateRow('fuel_logs', $id, $changes);
     reply(fuelDto(byId('fuel_logs', $id)), 'Fuel log updated');
 });
 route('POST', '/api/fuel/add', function () {
-    $user = actor(); $values = fuelValues(body());
+    $user = requireRole('DRIVER'); $values = fuelValues(body());
+    $assigned = row('SELECT id FROM vehicles WHERE registration_no = ? AND driver_id = ? AND is_deleted = 0', [$values['vehicle_reg_number'], $user['id']]);
+    $onTrip = row("SELECT id FROM trips WHERE vehicle_reg_number = ? AND driver_username = ? AND status IN ('ASSIGNED', 'STARTED') AND is_deleted = 0 LIMIT 1", [$values['vehicle_reg_number'], $user['user_name']]);
+    if (!$assigned && !$onTrip) fail('Vehicle is not assigned to you', 403);
+    if (!empty($values['trip_id']) && !row("SELECT id FROM trips WHERE id = ? AND vehicle_reg_number = ? AND driver_username = ? AND status IN ('ASSIGNED', 'STARTED') AND is_deleted = 0", [$values['trip_id'], $values['vehicle_reg_number'], $user['user_name']])) fail('Trip is not assigned to you', 403);
     $values['driver_username'] = $user['user_name']; $values['uploaded_by'] = $user['user_name']; $values['status'] = 'PENDING';
     $id = insertRow('fuel_logs', $values);
     reply(fuelDto(byId('fuel_logs', $id)), 'Fuel log added', 201);

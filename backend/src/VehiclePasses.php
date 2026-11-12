@@ -172,15 +172,16 @@ route('POST', '/api/vehicle-passes/apply', function () {
     reply(vehiclePassDto($created), $emailSent ? 'Vehicle pass application submitted and Head of Department notified' : 'Vehicle pass application saved; Head of Department email is not configured or could not be sent', 201);
 });
 
-// ── Public: Check Application Status by Pass Code or Phone ───────────────────────
+// ── Public: Check Application Status with both reference and phone ───────────────
 route('GET', '/api/vehicle-passes/check/{code}', function ($p) {
-    $code = trim($p['code'] ?? '');
-    if ($code === '') fail('Pass code or phone number is required');
+    $code = strtoupper(trim($p['code'] ?? ''));
+    $phone = trim((string)($_GET['phone'] ?? ''));
+    if ($code === '' || $phone === '') fail('Pass code and phone number are required');
 
-    $pass = row('SELECT * FROM vehicle_passes WHERE pass_code = ? OR phone_number = ? ORDER BY id DESC LIMIT 1', [strtoupper($code), $code]);
+    $pass = row('SELECT pass_code, form_type, status, rejection_reason, created_at FROM vehicle_passes WHERE pass_code = ? AND phone_number = ? LIMIT 1', [$code, $phone]);
     if (!$pass) fail('Vehicle pass application not found', 404);
 
-    reply(vehiclePassDto($pass));
+    reply(dto($pass));
 });
 
 // ── Admin/Controller: List all Vehicle Passes ──────────────────────────────────
