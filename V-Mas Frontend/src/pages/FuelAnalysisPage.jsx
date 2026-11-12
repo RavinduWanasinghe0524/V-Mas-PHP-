@@ -8,7 +8,7 @@ import { fuelAPI, vehicleAPI } from '../services/api'
 import {
   Fuel, DollarSign, Droplets, Activity, Zap, ArrowUpRight, ArrowDownRight, TrendingUp, Gauge,
   Calendar, Car, User, Clock, RotateCcw, ChevronLeft, ChevronRight, Filter,
-  Search, X, Check, Edit2, MoreVertical, AlertTriangle, BadgeCheck, RefreshCw
+  Search, X, Check, Edit2, MoreVertical, AlertTriangle, BadgeCheck, RefreshCw, Plus
 } from 'lucide-react'
 import { computeLogsEfficiency, formatFuelType } from '../utils/fuelUtils'
 

@@ -17,7 +17,7 @@ V-MAS is a fleet management application for administrators, controllers, and dri
 
 The eight teaching faculties and their departments are served from `backend/src/PassFaculties.php`. Graduate Studies is excluded because the university lists nine faculties and does not list Graduate Studies departments in the same way. The faculty list follows the [SUSL overview](https://www.sab.ac.lk/overview).
 
-For an existing `vehicle_passes` table, back up the database and apply `backend/database/add-pass-approval-columns.sql` once. A fresh database gets the columns from `schema.sql`. Set SendGrid credentials and `FRONTEND_URL` in `backend/.env`, then add approver addresses as JSON maps:
+For an existing database with no `vehicle_passes` table, run `php backend/bin/install-vehicle-pass-table.php`. The installer creates only that missing table and is safe to run again. For an older `vehicle_passes` table, back up the database and apply `backend/database/add-pass-approval-columns.sql` once. A fresh database gets the columns from `schema.sql`. Set SendGrid credentials and `FRONTEND_URL` in `backend/.env`, then add approver addresses as JSON maps:
 
 ```text
 PASS_HOD_EMAILS_JSON={"Computing|Software Engineering":"head@example.edu"}
@@ -25,6 +25,8 @@ PASS_DEAN_EMAILS_JSON={"Computing":"dean@example.edu"}
 ```
 
 Add the remaining faculty and department addresses using the exact dropdown labels. Applications remain at `PENDING_HOD` until the Head follows the emailed link. Approval immediately moves them to `PENDING_DEAN` and emails the Dean; Dean approval marks them `APPROVED`. Without configured addresses or SendGrid credentials, applications are saved but approval emails are not sent.
+
+The public status checker requires both the pass reference code and the phone number on the application. It returns status details only.
 
 The PHP routes keep the frontend's `/api/*` paths and `{success, message, data}` response envelope. The original Java code and its committed configuration are not included.
 

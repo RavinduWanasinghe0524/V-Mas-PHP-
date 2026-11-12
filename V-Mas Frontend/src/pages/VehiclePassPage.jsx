@@ -290,6 +290,7 @@ const VehiclePassPage = () => {
 
   // Status Search State
   const [searchQuery, setSearchQuery] = useState('')
+  const [searchPhone, setSearchPhone] = useState('')
   const [searching, setSearching] = useState(false)
   const [searchResult, setSearchResult] = useState(null)
   const [searchError, setSearchError] = useState('')
@@ -362,18 +363,18 @@ const VehiclePassPage = () => {
     e.preventDefault()
     setSearchError('')
     setSearchResult(null)
-    if (!searchQuery.trim()) return
+    if (!searchQuery.trim() || !searchPhone.trim()) return
 
     setSearching(true)
     try {
-      const res = await vehiclePassAPI.checkStatus(searchQuery.trim())
+      const res = await vehiclePassAPI.checkStatus(searchQuery.trim(), searchPhone.trim())
       if (res.data?.success && res.data?.data) {
         setSearchResult(res.data.data)
       } else {
         setSearchError('No pass found')
       }
     } catch (err) {
-      setSearchError(err.response?.data?.message || 'No application found matching this reference code or phone number.')
+      setSearchError(err.response?.data?.message || 'No application found matching this reference code and phone number.')
     } finally {
       setSearching(false)
     }
@@ -1110,19 +1111,29 @@ const VehiclePassPage = () => {
             </h1>
             <p style={{ color: 'var(--susl-muted)', fontSize: '0.9rem', margin: '4px 0 0' }}>
               {lang === 'si'
-                ? 'ඔබගේ අයදුම්පත් අංකය (උදා: VP-STF-2026-XXXX හෝ VP-OUT-2026-XXXX) හෝ ජංගම දුරකථන අංකය ඇතුළත් කරන්න.'
-                : 'Enter your Pass Tracking Reference Code (e.g. VP-STF-2026-XXXX or VP-OUT-2026-XXXX) or Phone Number.'}
+                ? 'ඔබගේ අයදුම්පත් අංකය සහ ජංගම දුරකථන අංකය ඇතුළත් කරන්න.'
+                : 'Enter your pass tracking reference code and the phone number used on the application.'}
             </p>
           </header>
 
-          <form onSubmit={handleCheckStatus} style={{ display: 'flex', gap: 10, marginBottom: 24 }}>
+          <form onSubmit={handleCheckStatus} style={{ display: 'flex', gap: 10, marginBottom: 24, flexWrap: 'wrap' }}>
             <input
               type="text"
-              placeholder={lang === 'si' ? 'අයදුම්පත් අංකය හෝ දුරකථන අංකය ඇතුළත් කරන්න...' : 'Enter pass code or phone number...'}
+              aria-label="Pass tracking reference code"
+              placeholder={lang === 'si' ? 'අයදුම්පත් අංකය' : 'Pass tracking reference code'}
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               required
-              style={{ flex: 1 }}
+              style={{ flex: '1 1 230px' }}
+            />
+            <input
+              type="tel"
+              aria-label="Phone number used on application"
+              placeholder={lang === 'si' ? 'ජංගම දුරකථන අංකය' : 'Phone number used on application'}
+              value={searchPhone}
+              onChange={e => setSearchPhone(e.target.value)}
+              required
+              style={{ flex: '1 1 210px' }}
             />
             <button type="submit" className="btn" disabled={searching}>
               {searching ? <RefreshCw size={16} className="animate-spin" /> : <Search size={16} />}
@@ -1177,23 +1188,7 @@ const VehiclePassPage = () => {
                 </div>
               )}
 
-              {searchResult.status === 'APPROVED' && (
-                <div style={{
-                  padding: '10px 14px', borderRadius: 8,
-                  background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.25)',
-                  color: '#6ee7b7', fontSize: '0.88rem', marginBottom: 14
-                }}>
-                  <strong>{lang === 'si' ? 'අනුමැතිය හිමිවිය:' : 'Approved by:'}</strong> {searchResult.approvedBy || 'Administration'}
-                </div>
-              )}
-
-              <div className="grid">
-                <div><label className="sub">{lang === 'si' ? 'අයදුම්කරු' : 'Applicant'}</label><div style={{ fontWeight: 600 }}>{searchResult.applicantName}</div></div>
-                <div><label className="sub">{lang === 'si' ? 'දුරකථනය' : 'Phone'}</label><div style={{ fontWeight: 600 }}>{searchResult.phoneNumber}</div></div>
-                <div><label className="sub">{lang === 'si' ? 'වාහන අංකය' : 'Vehicle Reg'}</label><div style={{ fontWeight: 700 }}>{searchResult.vehicleRegNumber}</div></div>
-                <div><label className="sub">{lang === 'si' ? 'වාහන වර්ගය' : 'Vehicle Type'}</label><div style={{ fontWeight: 600 }}>{searchResult.vehicleType}</div></div>
-                <div className="full"><label className="sub">{lang === 'si' ? 'අරමුණ / ගමනාන්තය' : 'Purpose / Destination'}</label><div>{searchResult.purpose}</div></div>
-              </div>
+              <p style={{ color: 'var(--susl-muted)' }}>{lang === 'si' ? 'අයදුම් කළ දිනය:' : 'Submitted:'} {searchResult.createdAt}</p>
 
               <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
                 <button type="button" className="btn" onClick={() => window.print()}>
