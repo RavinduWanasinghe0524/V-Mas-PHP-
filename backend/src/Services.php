@@ -5,6 +5,10 @@ const SERVICE_FIELDS = ['vehicle_reg_number', 'service_type', 'service_type_deta
 
 function serviceDto(array $service): array { return dto($service, ['is_deleted' => 'deleted'], ['is_deleted']); }
 function serviceById(int $id): array { return byId('service_records', $id); }
+function driverMayUseVehicle(array $user, array $vehicle): bool {
+    if ((int)($vehicle['driver_id'] ?? 0) === (int)$user['id']) return true;
+    return (bool)row("SELECT id FROM trips WHERE driver_username = ? AND vehicle_reg_number = ? AND status IN ('ASSIGNED', 'STARTED') AND is_deleted = 0 LIMIT 1", [$user['user_name'], $vehicle['registration_no']]);
+}
 function serviceVisible(array $record, array $user): bool {
     if ($user['role'] !== 'DRIVER') return true;
     if ($record['created_by'] === $user['user_name']) return true;
@@ -91,7 +95,9 @@ route('GET', '/api/services/{id}', function ($p) {
 });
 route('POST', '/api/services', function () {
     $user = actor(); $data = body(); $reg = (string)requireField($data, 'vehicleRegNumber'); $vehicle = vehicleByReg($reg);
+    if ($user['role'] === 'DRIVER' && !driverMayUseVehicle($user, $vehicle)) fail('Vehicle is not assigned to you', 403);
     foreach (['serviceType', 'serviceDate', 'currentMileageKm', 'serviceCost'] as $field) requireField($data, $field);
+    if (!is_numeric($data['currentMileageKm']) || (float)$data['currentMileageKm'] < 0 || !is_numeric($data['serviceCost']) || (float)$data['serviceCost'] < 0) fail('Invalid service mileage or cost');
     if (($data['serviceType'] ?? '') === 'OTHER' && empty(trim((string)($data['serviceTypeDetail'] ?? '')))) fail('Service type detail is required for OTHER');
     $values = fields($data, SERVICE_FIELDS); $values['created_by'] = $user['user_name']; $values['created_at'] = now();
     $values['status'] = $user['role'] === 'DRIVER' ? 'PENDING' : 'APPROVED'; $values['service_classification'] ??= 'ROUTINE';
@@ -99,13 +105,22 @@ route('POST', '/api/services', function () {
         $interval = scalar('SELECT interval_km FROM service_intervals WHERE vehicle_type = ? AND service_type = ?', [$vehicle['vehicle_type'], $values['service_type']]);
         if ($interval !== false) $values['next_service_mileage_km'] = (int)$values['current_mileage_km'] + (int)$interval;
     }
-    if ((int)$values['current_mileage_km'] > (int)$vehicle['current_mileage_km']) updateRow('vehicles', (int)$vehicle['id'], ['current_mileage_km' => (int)$values['current_mileage_km']]);
-    $id = insertRow('service_records', $values); reply(serviceDto(serviceById($id)), 'Service record created', 201);
+    db()->beginTransaction();
+    try {
+        $id = insertRow('service_records', $values);
+        if ($values['status'] === 'APPROVED' && (float)$values['current_mileage_km'] > (float)$vehicle['current_mileage_km']) updateRow('vehicles', (int)$vehicle['id'], ['current_mileage_km' => $values['current_mileage_km']]);
+        db()->commit();
+    } catch (Throwable $e) { db()->rollBack(); throw $e; }
+    reply(serviceDto(serviceById($id)), 'Service record created', 201);
 });
 route('PUT', '/api/services/{id}', function ($p) {
     $user = actor(); $id = (int)$p['id']; $old = serviceById($id); if (!serviceVisible($old, $user)) fail('Access denied', 403);
     if ($user['role'] === 'DRIVER' && $old['created_by'] !== $user['user_name']) fail('You can only edit records you created', 403);
-    $changes = fields(body(), SERVICE_FIELDS); if (isset($changes['vehicle_reg_number'])) vehicleByReg($changes['vehicle_reg_number']);
+    $changes = fields(body(), SERVICE_FIELDS);
+    if (isset($changes['vehicle_reg_number'])) {
+        $vehicle = vehicleByReg($changes['vehicle_reg_number']);
+        if ($user['role'] === 'DRIVER' && !driverMayUseVehicle($user, $vehicle)) fail('Vehicle is not assigned to you', 403);
+    }
     if (($changes['service_type'] ?? $old['service_type']) === 'OTHER' && empty(trim((string)($changes['service_type_detail'] ?? $old['service_type_detail'] ?? '')))) fail('Service type detail is required for OTHER');
     if ($user['role'] === 'DRIVER') $changes['status'] = 'PENDING';
     serviceAudit($id, $user['user_name'], $old, $changes); updateRow('service_records', $id, $changes);
@@ -122,7 +137,15 @@ route('PATCH', '/api/services/{id}/restore', function ($p) {
 foreach (['approve' => 'APPROVED', 'reject' => 'REJECTED'] as $action => $status) {
     route('PATCH', "/api/services/{id}/$action", function ($p) use ($status) {
         requireRole('ADMIN', 'CONTROLLER'); $id = (int)$p['id']; $record = serviceById($id);
-        updateRow('service_records', $id, ['status' => $status]);
+        db()->beginTransaction();
+        try {
+            updateRow('service_records', $id, ['status' => $status]);
+            if ($status === 'APPROVED') {
+                $vehicle = vehicleByReg($record['vehicle_reg_number']);
+                if ((float)$record['current_mileage_km'] > (float)$vehicle['current_mileage_km']) updateRow('vehicles', (int)$vehicle['id'], ['current_mileage_km' => $record['current_mileage_km']]);
+            }
+            db()->commit();
+        } catch (Throwable $e) { db()->rollBack(); throw $e; }
         if ($record['created_by']) notify('USER-' . $record['created_by'], 'Your service record for vehicle ' . $record['vehicle_reg_number'] . ' was ' . strtolower($status), 'SERVICE_' . $status);
         reply(serviceDto(serviceById($id)), 'Service record status updated');
     });
