@@ -222,8 +222,8 @@ const UserStatsPieChart = ({ stats }) => {
   const data = mode === 'role' ? roleData : statusData
   const total = data.reduce((s, d) => s + d.value, 0)
   const cx = 110, cy = 110, R = 86, r = 56
-  let angle = -Math.PI / 2
-  const slices = data.map(d => {
+  const slices = data.map((d, index) => {
+    const angle = -Math.PI / 2 + data.slice(0, index).reduce((sum, item) => sum + item.value, 0) / (total || 1) * 2 * Math.PI
     const sweep = (d.value / (total || 1)) * 2 * Math.PI
     const x1 = cx + R * Math.cos(angle), y1 = cy + R * Math.sin(angle)
     const x2 = cx + R * Math.cos(angle + sweep), y2 = cy + R * Math.sin(angle + sweep)
@@ -233,7 +233,6 @@ const UserStatsPieChart = ({ stats }) => {
     const path = `M ${x1} ${y1} A ${R} ${R} 0 ${large} 1 ${x2} ${y2} L ${ix2} ${iy2} A ${r} ${r} 0 ${large} 0 ${ix1} ${iy1} Z`
     const mid = angle + sweep / 2, midR = (R + r) / 2
     const lx = cx + midR * Math.cos(mid), ly = cy + midR * Math.sin(mid)
-    angle += sweep
     return { ...d, path, sweep, lx, ly }
   })
   const tabBtn = (active) => ({ flex: 1, padding: '7px 10px', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: '0.76rem', fontWeight: 800, fontFamily: 'inherit', transition: 'all 0.15s', background: active ? 'var(--primary)' : 'transparent', color: active ? '#fff' : 'var(--text-muted)' })
@@ -873,8 +872,8 @@ const MaintenanceCostDonutChart = ({ isDark, services = [] }) => {
   })).sort((a, b) => b.value - a.value)
 
   const cx = 90, cy = 90, R = 85, r = 60
-  let angle = -Math.PI / 2
-  const slices = data.map(d => {
+  const slices = data.map((d, index) => {
+    const angle = -Math.PI / 2 + data.slice(0, index).reduce((sum, item) => sum + item.value, 0) / (totalCost || 1) * 2 * Math.PI
     const sweep = (d.value / (totalCost || 1)) * 2 * Math.PI
     const x1 = cx + R * Math.cos(angle), y1 = cy + R * Math.sin(angle)
     const x2 = cx + R * Math.cos(angle + sweep), y2 = cy + R * Math.sin(angle + sweep)
@@ -882,7 +881,6 @@ const MaintenanceCostDonutChart = ({ isDark, services = [] }) => {
     const ix2 = cx + r * Math.cos(angle + sweep), iy2 = cy + r * Math.sin(angle + sweep)
     const large = sweep > Math.PI ? 1 : 0
     const path = `M ${x1} ${y1} A ${R} ${R} 0 ${large} 1 ${x2} ${y2} L ${ix2} ${iy2} A ${r} ${r} 0 ${large} 0 ${ix1} ${iy1} Z`
-    angle += sweep
     return { path, ...d }
   })
 
@@ -2000,7 +1998,7 @@ const DashboardPage = () => {
         const saved = localStorage.getItem(`vmas-privacy-settings-${user?.id || 'me'}`)
         const parsed = saved ? JSON.parse(saved) : null
         setAlertFilter(Array.isArray(parsed?.alertTypes) ? parsed.alertTypes : ['SERVICE', 'INSURANCE', 'FUEL', 'OVERDUE'])
-      } catch { }
+      } catch { /* Keep the default alert filters when stored settings are invalid. */ }
     }
     load()
     window.addEventListener('focus', load)

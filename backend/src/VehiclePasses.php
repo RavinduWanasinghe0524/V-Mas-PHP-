@@ -225,8 +225,8 @@ route('PATCH', '/api/vehicle-passes/{id}/status', function ($p) {
 
     $data = body();
     $status = strtoupper((string)requireField($data, 'status'));
-    if (!in_array($status, ['APPROVED', 'REJECTED', 'PENDING'], true)) {
-        fail('Invalid status. Allowed: APPROVED, REJECTED, PENDING');
+    if (!in_array($status, ['APPROVED', 'REJECTED'], true)) {
+        fail('Invalid status. Allowed: APPROVED, REJECTED');
     }
     if ($status === 'APPROVED' && !$pass['dean_approved_at']) fail('Dean approval is required before issuing this pass', 409);
 
@@ -238,6 +238,10 @@ route('PATCH', '/api/vehicle-passes/{id}/status', function ($p) {
 
     if ($status === 'REJECTED' && !empty($data['rejectionReason'])) {
         $updates['rejection_reason'] = (string)$data['rejectionReason'];
+    }
+    if ($status === 'REJECTED') {
+        $updates['approval_token_hash'] = null;
+        $updates['approval_token_expires_at'] = null;
     }
 
     updateRow('vehicle_passes', $id, $updates);

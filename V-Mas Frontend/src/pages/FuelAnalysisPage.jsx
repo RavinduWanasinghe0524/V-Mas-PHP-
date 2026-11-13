@@ -536,14 +536,12 @@ const FuelTypeDonutChart = ({ logs, D }) => {
 
   // Build SVG donut arcs
   const CX = 100, CY = 100, R = 85, IR = 55
-  let cumAngle = -Math.PI / 2
   const arcSlices = slices.map((sl, i) => {
     const val = view === 'volume' ? sl.volume : sl.cost
     const frac = totalVal > 0 ? val / totalVal : 0
     const sweep = frac * 2 * Math.PI
-    const startA = cumAngle
-    cumAngle += sweep
-    const endA = cumAngle
+    const startA = -Math.PI / 2 + slices.slice(0, i).reduce((sum, item) => sum + (view === 'volume' ? item.volume : item.cost), 0) / (totalVal || 1) * 2 * Math.PI
+    const endA = startA + sweep
     const gap = 0.025
     const s1 = startA + gap, e1 = endA - gap
     const large = e1 - s1 > Math.PI ? 1 : 0

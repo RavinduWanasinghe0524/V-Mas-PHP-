@@ -30,7 +30,7 @@ export const useD = () => {
         role = parsed.role || 'NONE';
       }
     }
-  } catch (e) { }
+  } catch { /* Use the default theme when stored settings are unavailable. */ }
 
   // Base role-specific configuration mapping
   const roleColors = {
