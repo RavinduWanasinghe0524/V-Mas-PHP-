@@ -67,14 +67,6 @@ const SkeletonCard = ({ D }) => (
   </div>
 )
 
-// ── Recent reports initial state ─────────────────────────────────────────────
-const recentReports = [
-  { name: 'Vehicle-Summary-May-2026.pdf', generated: '2026-05-20', format: 'PDF', size: '245 KB' },
-  { name: 'Fuel-Consumption-Apr-2026.xlsx', generated: '2026-05-01', format: 'Excel', size: '118 KB' },
-  { name: 'User-Activity-Q2-2026.pdf', generated: '2026-05-15', format: 'PDF', size: '312 KB' },
-  { name: 'Service-Summary-Apr-2026.pdf', generated: '2026-05-02', format: 'PDF', size: '198 KB' },
-]
-
 // ── Role-based report access ─────────────────────────────────────────────────
 const ROLE_ACCESS = {
   ADMIN: ['master-report', 'vehicle-summary', 'fuel-report', 'fuel-efficiency', 'service-report', 'user-report', 'cost-report', 'driver-performance', 'vehicle-documents', 'maintenance-schedule', 'vehicle-mileage'],
@@ -88,6 +80,15 @@ const ReportsPage = () => {
   const { user } = useAuth()
   const isDark = theme === 'blue'
   const userRole = user?.role || 'DRIVER'
+  const reportHistoryKey = `vmas-report-history:${user?.userName || 'anonymous'}`
+  const getReportFuelLogs = useCallback(async () => {
+    const response = await (userRole === 'DRIVER' ? fuelAPI.getMyLogs() : fuelAPI.getAllFuelLogs())
+    return { ...response, data: { ...response.data, data: (response.data?.data || []).filter(log => log.status === 'APPROVED') } }
+  }, [userRole])
+  const getReportServices = useCallback(async () => {
+    const response = await serviceAPI.getAllServices()
+    return { ...response, data: { ...response.data, data: (response.data?.data || []).filter(record => record.status === 'APPROVED') } }
+  }, [])
   const [passRecords, setPassRecords] = useState([])
   useEffect(() => {
     if (userRole === 'ADMIN' || userRole === 'CONTROLLER') vehiclePassAPI.getAll().then(r => setPassRecords(r.data?.data || [])).catch(() => setPassRecords([]))
@@ -124,8 +125,16 @@ const ReportsPage = () => {
   const [successMsg, setSuccessMsg] = useState('')
   const [recentSearch, setRecentSearch] = useState('')
   const [pdfTheme, setPdfTheme] = useState('indigo')
-  const [reportsList, setReportsList] = useState(recentReports)
-  const [activeCategory, setActiveCategory] = useState('Vehicle')
+  const [reportsList, setReportsList] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(reportHistoryKey) || '[]')
+      return Array.isArray(saved) ? saved : []
+    } catch { return [] }
+  })
+  useEffect(() => {
+    try { localStorage.setItem(reportHistoryKey, JSON.stringify(reportsList)) } catch { /* History is optional when storage is unavailable. */ }
+  }, [reportHistoryKey, reportsList])
+  const [activeCategory, setActiveCategory] = useState(userRole === 'DRIVER' ? 'Fuel' : 'Vehicle')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
@@ -225,8 +234,8 @@ const ReportsPage = () => {
 
       const [vRes, sRes, fRes] = await Promise.all([
         vehicleAPI.getAllVehicles(),
-        serviceAPI.getAllServices(),
-        fuelAPI.getAllFuelLogs()
+        getReportServices(),
+        getReportFuelLogs()
       ])
 
       const allVehicles = vRes.data?.data || []
@@ -431,7 +440,7 @@ const ReportsPage = () => {
         doc.save(fileName)
 
         setReportsList(prev => [
-          { name: fileName, generated: new Date().toISOString().split('T')[0], format: 'PDF', size: '280 KB' },
+          { name: fileName, generated: new Date().toISOString().split('T')[0], format: 'PDF', size: `${Math.ceil(doc.output('blob').size / 1024)} KB` },
           ...prev.filter(p => p.name !== fileName)
         ])
         setSuccessMsg(`Generated custom PDF document for ${reg}!`)
@@ -526,7 +535,7 @@ const ReportsPage = () => {
         link.click()
 
         setReportsList(prev => [
-          { name: fileName, generated: new Date().toISOString().split('T')[0], format: 'Excel', size: '145 KB' },
+          { name: fileName, generated: new Date().toISOString().split('T')[0], format: 'Excel', size: `${Math.ceil(blob.size / 1024)} KB` },
           ...prev.filter(p => p.name !== fileName)
         ])
         setSuccessMsg(`Generated custom Excel document for ${reg}!`)
@@ -545,8 +554,8 @@ const ReportsPage = () => {
     try {
       const results = await Promise.allSettled([
         vehicleAPI.getAllVehicles(),
-        fuelAPI.getAllFuelLogs(),
-        serviceAPI.getAllServices(),
+        getReportFuelLogs(),
+        getReportServices(),
         userAPI.getAllUsers(),
       ])
       setLiveStats({
@@ -562,7 +571,7 @@ const ReportsPage = () => {
     } catch {
       setLiveStats({ vehicles: '—', fuelLogs: '—', services: '—', users: '—', loading: false })
     }
-  }, [])
+  }, [getReportFuelLogs, getReportServices])
 
   useEffect(() => { fetchLiveStats() }, [fetchLiveStats])
 
@@ -618,7 +627,7 @@ const ReportsPage = () => {
           v.status || '—', v.currentMileageKm ? `${v.currentMileageKm} km` : '0 km', v.fuelType ? formatFuelType(v.fuelType) : '—'
         ])
       } else if (id === 'fuel-report' || id === 'driver-performance' || id === 'fuel-efficiency') {
-        const { data } = await fuelAPI.getAllFuelLogs()
+        const { data } = await getReportFuelLogs()
         let logs = data?.data || []
         if (selectedVehicle !== 'all') {
           logs = logs.filter(f => f.vehicleRegNumber === selectedVehicle)
@@ -634,7 +643,7 @@ const ReportsPage = () => {
           f.totalCost != null ? `Rs. ${Number(f.totalCost).toLocaleString()}` : 'Rs. 0'
         ])
       } else if (id === 'service-report' || id === 'maintenance-schedule') {
-        const { data } = await serviceAPI.getAllServices()
+        const { data } = await getReportServices()
         let svcs = data?.data || []
         if (selectedVehicle !== 'all') {
           svcs = svcs.filter(s => s.vehicleRegNumber === selectedVehicle)
@@ -682,7 +691,7 @@ const ReportsPage = () => {
             ]
           })
       } else if (id === 'cost-report') {
-        const [fRes, sRes] = await Promise.all([fuelAPI.getAllFuelLogs(), serviceAPI.getAllServices()])
+        const [fRes, sRes] = await Promise.all([getReportFuelLogs(), getReportServices()])
         let fuelLogs = fRes.data?.data || []
         let services = sRes.data?.data || []
         if (selectedVehicle !== 'all') {
@@ -795,7 +804,7 @@ const ReportsPage = () => {
           doc.setFontSize(14)
           doc.text('Fuel Records', 14, doc.lastAutoTable ? doc.lastAutoTable.finalY + 15 : 40)
         }
-        const { data: fuelRes } = await fuelAPI.getAllFuelLogs()
+        const { data: fuelRes } = await getReportFuelLogs()
         let filteredFuel = fuelRes.data || []
         if (selectedVehicle !== 'all') filteredFuel = filteredFuel.filter(f => f.vehicleRegNumber === selectedVehicle)
         if (startDate) filteredFuel = filteredFuel.filter(f => f.date && new Date(f.date) >= new Date(startDate))
@@ -821,7 +830,7 @@ const ReportsPage = () => {
           doc.setFontSize(14)
           doc.text('Service & Maintenance Records', 14, doc.lastAutoTable ? doc.lastAutoTable.finalY + 15 : 40)
         }
-        const { data: svcRes } = await serviceAPI.getAllServices()
+        const { data: svcRes } = await getReportServices()
         let filteredServices = svcRes.data || []
         if (selectedVehicle !== 'all') filteredServices = filteredServices.filter(s => s.vehicleRegNumber === selectedVehicle)
         if (startDate) filteredServices = filteredServices.filter(s => s.serviceDate && new Date(s.serviceDate) >= new Date(startDate))
@@ -923,8 +932,8 @@ const ReportsPage = () => {
           doc.setFontSize(14); doc.setTextColor(40, 40, 40)
           doc.text('Cost Analysis', 14, doc.lastAutoTable ? doc.lastAutoTable.finalY + 15 : 40)
         }
-        const { data: fuelLogsApiRes } = await fuelAPI.getAllFuelLogs()
-        const { data: servicesApiRes } = await serviceAPI.getAllServices()
+        const { data: fuelLogsApiRes } = await getReportFuelLogs()
+        const { data: servicesApiRes } = await getReportServices()
         let fuelLogs = fuelLogsApiRes.data || []
         let services = servicesApiRes.data || []
         if (selectedVehicle !== 'all') {
@@ -984,7 +993,7 @@ const ReportsPage = () => {
           doc.setFontSize(14); doc.setTextColor(40, 40, 40)
           doc.text('Driver Performance Ranking', 14, doc.lastAutoTable ? doc.lastAutoTable.finalY + 15 : 40)
         }
-        const { data: fuelRes } = await fuelAPI.getAllFuelLogs()
+        const { data: fuelRes } = await getReportFuelLogs()
         const logs = fuelRes.data || []
         const drvMap = {}
         logs.forEach(l => {
@@ -1061,7 +1070,7 @@ const ReportsPage = () => {
           doc.setFontSize(14); doc.setTextColor(40, 40, 40)
           doc.text('Scheduled & Pending Maintenance Alerts', 14, doc.lastAutoTable ? doc.lastAutoTable.finalY + 15 : 40)
         }
-        const { data: svcRes } = await serviceAPI.getAllServices()
+        const { data: svcRes } = await getReportServices()
         const allSvc = svcRes.data || []
         const getTableStatusLocal = (s) => {
           if (!s) return 'Open'
@@ -1212,7 +1221,7 @@ const ReportsPage = () => {
       doc.save(filename)
       setSuccessMsg(`Report "${filename}" generated and downloaded successfully.`)
       setTimeout(() => setSuccessMsg(''), 5000)
-      setReportsList(prev => [{ name: filename, generated: new Date().toISOString().split('T')[0], format: 'PDF', size: id === 'master-report' ? '450 KB' : '120 KB' }, ...prev.filter(r => r.name !== filename)])
+      setReportsList(prev => [{ name: filename, generated: new Date().toISOString().split('T')[0], format: 'PDF', size: `${Math.ceil(doc.output('blob').size / 1024)} KB` }, ...prev.filter(r => r.name !== filename)])
     } catch (err) {
       const reportName = reportTypes.find(r => r.id === id)?.title || id
       if (err.response?.status === 401 || err.response?.status === 403) setError(`Permission denied: You do not have access to generate the "${reportName}" report.`)
@@ -1234,15 +1243,15 @@ const ReportsPage = () => {
       const needsEfficiency = ['fuel-efficiency', 'master-report'].includes(id)
       const fetches = []
       if (needsVehicles) fetches.push(vehicleAPI.getAllVehicles().then(r => { vehicles = r.data?.data || [] }))
-      if (needsFuel) fetches.push(fuelAPI.getAllFuelLogs().then(r => { fuelLogs = r.data?.data || [] }))
-      if (needsServices) fetches.push(serviceAPI.getAllServices().then(r => { services = r.data?.data || [] }))
+      if (needsFuel) fetches.push(getReportFuelLogs().then(r => { fuelLogs = r.data?.data || [] }))
+      if (needsServices) fetches.push(getReportServices().then(r => { services = r.data?.data || [] }))
       if (needsUsers) fetches.push(userAPI.getAllUsers().then(r => { users = r.data?.data || [] }))
       if (needsEfficiency) fetches.push(fuelAPI.getFuelEfficiencyReport().then(r => { effReport = r.data?.data || r.data || null }))
       await Promise.all(fetches)
       const filename = await generateStyledExcel(id, { vehicles, fuelLogs, services, users, effReport, startDate, endDate })
       setSuccessMsg(`Excel report "${filename}" generated and downloaded successfully.`)
       setTimeout(() => setSuccessMsg(''), 5000)
-      setReportsList(prev => [{ name: filename, generated: new Date().toISOString().split('T')[0], format: 'Excel', size: id === 'master-report' ? '420 KB' : '95 KB' }, ...prev.filter(r => r.name !== filename)])
+      setReportsList(prev => [{ name: filename, generated: new Date().toISOString().split('T')[0], format: 'Excel', size: '—' }, ...prev.filter(r => r.name !== filename)])
     } catch (err) {
       const reportName = reportTypes.find(r => r.id === id)?.title || id
       if (err.response?.status === 401 || err.response?.status === 403) setError(`Permission denied: You do not have access to generate the "${reportName}" Excel report.`)
@@ -1289,14 +1298,11 @@ const ReportsPage = () => {
     setClearHistoryModalOpen(false)
   }
   const handleRedownload = (name, format) => {
+    const custom = /^V-MAS_(.+)_Detailed_Document\.(pdf|xlsx)$/i.exec(name)
+    if (custom) { openDocModal(custom[1]); return }
     const matchedType = reportTypes.find(t => name.toLowerCase().startsWith(t.id.toLowerCase()))
-    const fallbackId = (() => {
-      if (name.toLowerCase().includes('fuel')) return 'fuel-report'
-      if (name.toLowerCase().includes('user')) return 'user-report'
-      if (name.toLowerCase().includes('service')) return 'service-report'
-      return 'vehicle-summary'
-    })()
-    const targetId = matchedType?.id || fallbackId
+    if (!matchedType) { setError('This report type is no longer available.'); return }
+    const targetId = matchedType.id
     if (format === 'PDF') handleGenerate(targetId)
     else handleGenerateExcel(targetId)
   }

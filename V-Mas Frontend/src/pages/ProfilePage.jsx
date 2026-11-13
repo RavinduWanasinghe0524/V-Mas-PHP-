@@ -132,7 +132,7 @@ const ProfilePage = () => {
     e.preventDefault()
     setPwError(''); setPwSuccess('')
     if (pwForm.newPassword !== pwForm.confirmPassword) { setPwError('New passwords do not match'); return }
-    if (pwForm.newPassword.length < 6) { setPwError('New password must be at least 6 characters'); return }
+    if (pwForm.newPassword.length < 8) { setPwError('New password must be at least 8 characters'); return }
     setPwLoading(true)
     try {
       await profileAPI.changePassword({
