@@ -109,10 +109,12 @@ const VehiclePassAdminPage = () => {
   const handlePrintSlip = (pass) => {
     const isOutstation = pass.formType === 'SUSL/GA/TD/01'
     const printWindow = window.open('', '_blank')
+    if (!printWindow) return
+    const safe = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char])
     printWindow.document.write(`
       <html>
         <head>
-          <title>${pass.formType || 'Pass'} - ${pass.passCode}</title>
+          <title>${safe(pass.formType || 'Pass')} - ${safe(pass.passCode)}</title>
           <style>
             body { font-family: sans-serif; padding: 30px; color: #1e293b; background: #fff; }
             .card { border: 2px solid #1f3a5f; border-radius: 8px; padding: 24px; max-width: 620px; margin: 0 auto; }
@@ -130,26 +132,26 @@ const VehiclePassAdminPage = () => {
         </head>
         <body>
           <div class="card">
-            <span class="ref">${pass.formType || 'SUSL/GA/TD/03'}</span>
+            <span class="ref">${safe(pass.formType || 'SUSL/GA/TD/03')}</span>
             <div class="header">
               <div class="uni">Sabaragamuwa University of Sri Lanka</div>
               <div class="sub">General Administration Division</div>
               <div class="title">${isOutstation ? 'Vehicle Gate Pass for Outstation Travel' : 'Staff Vehicle Identification Permit'}</div>
-              <div class="code">${pass.passCode}</div>
-              <div style="margin-top: 6px;"><span class="badge">${pass.status}</span></div>
+              <div class="code">${safe(pass.passCode)}</div>
+              <div style="margin-top: 6px;"><span class="badge">${safe(pass.status)}</span></div>
             </div>
-            <div class="row"><span class="label">Applicant Name:</span><span>${pass.applicantName}</span></div>
-            <div class="row"><span class="label">Phone / Contact:</span><span>${pass.phoneNumber}</span></div>
-            ${pass.nicNumber ? `<div class="row"><span class="label">NIC / ID:</span><span>${pass.nicNumber}</span></div>` : ''}
-            <div class="row"><span class="label">Vehicle Registration:</span><span style="font-weight:bold;">${pass.vehicleRegNumber}</span></div>
-            <div class="row"><span class="label">Vehicle Type:</span><span>${pass.vehicleType}</span></div>
-            <div class="row"><span class="label">Valid Dates:</span><span>${pass.startDate} ${pass.endDate ? 'to ' + pass.endDate : ''}</span></div>
-            <div class="row"><span class="label">Department / Destination:</span><span>${pass.destination || 'University Premises'}</span></div>
-            <div class="row"><span class="label">Purpose / Notes:</span><span>${pass.purpose}</span></div>
-            <div class="row"><span class="label">Authorized By:</span><span>${pass.approvedBy || 'Security Controller'}</span></div>
+            <div class="row"><span class="label">Applicant Name:</span><span>${safe(pass.applicantName)}</span></div>
+            <div class="row"><span class="label">Phone / Contact:</span><span>${safe(pass.phoneNumber)}</span></div>
+            ${pass.nicNumber ? `<div class="row"><span class="label">NIC / ID:</span><span>${safe(pass.nicNumber)}</span></div>` : ''}
+            <div class="row"><span class="label">Vehicle Registration:</span><span style="font-weight:bold;">${safe(pass.vehicleRegNumber)}</span></div>
+            <div class="row"><span class="label">Vehicle Type:</span><span>${safe(pass.vehicleType)}</span></div>
+            <div class="row"><span class="label">Valid Dates:</span><span>${safe(pass.startDate)} ${pass.endDate ? 'to ' + safe(pass.endDate) : ''}</span></div>
+            <div class="row"><span class="label">Department / Destination:</span><span>${safe(pass.destination || 'University Premises')}</span></div>
+            <div class="row"><span class="label">Purpose / Notes:</span><span>${safe(pass.purpose)}</span></div>
+            <div class="row"><span class="label">Authorized By:</span><span>${safe(pass.approvedBy || 'Security Controller')}</span></div>
             <div class="footer">Sabaragamuwa University of Sri Lanka • Official Gate Entry Document</div>
           </div>
-          <script>window.onload = function() { window.print(); }<\/script>
+          <script>window.onload = function() { window.print(); }</script>
         </body>
       </html>
     `)

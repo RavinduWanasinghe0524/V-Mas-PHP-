@@ -244,7 +244,7 @@ const VehiclePassPage = () => {
   })
   const setLang = (l) => {
     setLangState(l)
-    try { localStorage.setItem('susl-lang', l) } catch (e) {}
+    try { localStorage.setItem('susl-lang', l) } catch { /* Language still changes for this visit. */ }
   }
 
   // Active View Tab: 'form03' (Staff Vehicle ID), 'form01' (Outstation Gate Pass), 'check' (Track Status)
