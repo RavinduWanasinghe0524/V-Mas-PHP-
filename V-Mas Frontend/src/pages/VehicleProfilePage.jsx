@@ -104,7 +104,7 @@ export default function VehicleProfilePage() {
           const direct = await vehicleAPI.getVehicleByRegNo(targetReg)
           const dData = direct?.data?.data || direct?.data
           if (dData && (dData.registrationNo || dData.id)) found = dData
-        } catch (_) {}
+        } catch { /* Fall back to the vehicle list result. */ }
       }
 
       if (!found) {
@@ -175,7 +175,7 @@ export default function VehicleProfilePage() {
     try {
       const r = await vehicleAPI.unassignDriver(vehicle.id)
       setVehicle(r.data?.data || r.data)
-    } catch (_) {}
+    } catch (error) { setDriverError(error.response?.data?.message || 'Failed to unassign driver.') }
     finally { setDriverBusy(false) }
   }
 

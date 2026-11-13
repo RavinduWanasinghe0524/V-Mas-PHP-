@@ -96,6 +96,14 @@ const getLinkFromType = (type) => {
     case 'FUEL_UPDATE':     return '/fuel-management'
     case 'LOW_EFFICIENCY':  return '/fuel-analysis'
     case 'FUEL_LOW_EFF':    return '/fuel-analysis'
+    case 'TRIP_ASSIGNED':   return '/jobs'
+    case 'TRIP_CANCELLED':  return '/jobs'
+    case 'TRIP_START':      return '/jobs'
+    case 'TRIP_DECLINE':    return '/jobs'
+    case 'TRIP_COMPLETE':   return '/jobs'
+    case 'SERVICE_APPROVED': return '/service'
+    case 'SERVICE_REJECTED': return '/service'
+    case 'VEHICLE_PASS':    return '/vehicle-passes'
     // Service events
     case 'WARNING':         return '/service'
     case 'SERVICE_DUE':     return '/service'
@@ -233,13 +241,11 @@ const Topbar = ({ title, subtitle, onMenuToggle }) => {
   const fetchData = async () => {
     if (!user) return
     try {
-      // 1. Admin & Controller notifications (backend)
-      if (user.role === 'ADMIN' || user.role === 'CONTROLLER') {
-        const res = await notificationAPI.getAll()
-        const data = res.data.data || []
-        setNotifications(data)
-        setUnreadCount(data.filter(n => !n.isRead).length)
-      }
+      // Backend notifications are scoped to the signed-in user.
+      const res = await notificationAPI.getAll()
+      const data = res.data.data || []
+      setNotifications(data)
+      setUnreadCount(data.filter(n => !n.isRead).length)
 
       // 2. Dashboard Alerts (Admin/Controller)
       if (user.role === 'ADMIN' || user.role === 'CONTROLLER') {
@@ -294,11 +300,9 @@ const Topbar = ({ title, subtitle, onMenuToggle }) => {
 
   const handleMarkAllAsRead = async () => {
     try {
-      if (user?.role === 'ADMIN' || user?.role === 'CONTROLLER') {
-        await notificationAPI.markAllAsRead()
-        setNotifications(prev => prev.map(n => ({ ...n, isRead: true })))
-        setUnreadCount(0)
-      }
+      await notificationAPI.markAllAsRead()
+      setNotifications(prev => prev.map(n => ({ ...n, isRead: true })))
+      setUnreadCount(0)
       if (user?.role === 'CONTROLLER') {
         notifService.markAllCtrlRead()
       } else if (user?.role === 'DRIVER') {
@@ -795,7 +799,14 @@ const Topbar = ({ title, subtitle, onMenuToggle }) => {
 
                   {/* 4. Driver Log */}
                   {user.role === 'DRIVER' && (
-                    fDrvNotifs.length === 0 ? <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8', fontSize: '0.85rem' }}>No recent activity</div> :
+                    <>
+                    {fNotifications.map(n => (
+                      <div key={`backend-${n.id}`} onClick={() => handleAdminNotifClick(n)} style={{ padding: '12px 16px', borderBottom: `1px solid ${isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)'}`, cursor: 'pointer', background: n.isRead ? 'transparent' : 'rgba(59,130,246,0.06)' }}>
+                        <p style={{ margin: 0, fontSize: '0.82rem', color: isDark ? '#f3f4f6' : '#1e293b', fontWeight: n.isRead ? 400 : 600 }}>{n.message}</p>
+                        <span style={{ fontSize: '0.65rem', color: '#94a3b8' }}>{parseBackendDate(n.createdAt).toLocaleString()}</span>
+                      </div>
+                    ))}
+                    {fDrvNotifs.length === 0 && fNotifications.length === 0 ? <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8', fontSize: '0.85rem' }}>No recent activity</div> :
                     fDrvNotifs.map(n => (
                       <div key={n.id} onClick={() => handleNotifClick(n, handleDrvMarkRead)} style={{ padding: '12px 16px', borderBottom: `1px solid ${isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)'}`, display: 'flex', gap: 12, alignItems: 'flex-start', background: n.isRead ? 'transparent' : (isDark ? 'rgba(16,185,129,0.06)' : 'rgba(16,185,129,0.04)'), cursor: n.link ? 'pointer' : (n.isRead ? 'default' : 'pointer'), transition: 'all 0.15s', borderLeft: n.isRead ? '3px solid transparent' : '3px solid #10b981' }}
                         onMouseEnter={e => { if (n.link || !n.isRead) e.currentTarget.style.background = isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.03)' }}
@@ -808,7 +819,8 @@ const Topbar = ({ title, subtitle, onMenuToggle }) => {
                         </div>
                         {n.link && <ChevronRight size={14} color="#94a3b8" style={{ flexShrink: 0, alignSelf: 'center', marginLeft: 4 }} />}
                       </div>
-                    ))
+                    ))}
+                    </>
                   )}
                 </div>
               </div>

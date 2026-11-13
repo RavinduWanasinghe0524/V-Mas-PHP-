@@ -26,20 +26,43 @@ route('GET', '/api/alerts/dashboard', function () {
     reply(['totalAlerts' => count($alerts), 'overdueCount' => $overdue, 'upcomingCount' => count($alerts) - $overdue, 'alerts' => $alerts]);
 });
 
+function notificationScope(array $user): array {
+    $where = "(n.vehicle_reg_number = ? OR n.vehicle_reg_number = ? OR (n.vehicle_reg_number = 'CONTROLLER' AND ? = 'CONTROLLER') OR (? IN ('ADMIN', 'CONTROLLER') AND (n.vehicle_reg_number IS NULL OR (n.vehicle_reg_number <> 'CONTROLLER' AND n.vehicle_reg_number NOT LIKE 'USER-%' AND NOT EXISTS (SELECT 1 FROM users u WHERE u.user_name = n.vehicle_reg_number)))))";
+    return [$where, [$user['user_name'], 'USER-' . $user['user_name'], $user['role'], $user['role']]];
+}
+
+function notificationsForUser(array $user, bool $unreadOnly = false, ?int $id = null): array {
+    [$where, $params] = notificationScope($user);
+    $sql = 'SELECT n.id, n.vehicle_reg_number, n.message, n.type, n.created_at, CASE WHEN n.is_read = 1 OR r.notification_id IS NOT NULL THEN 1 ELSE 0 END AS is_read FROM notifications n LEFT JOIN notification_reads r ON r.notification_id = n.id AND r.user_id = ? WHERE ' . $where;
+    if ($unreadOnly) $sql .= ' AND n.is_read = 0 AND r.notification_id IS NULL';
+    if ($id !== null) { $sql .= ' AND n.id = ?'; $params[] = $id; }
+    $sql .= ' ORDER BY n.created_at DESC, n.id DESC';
+    return rows($sql, [$user['id'], ...$params]);
+}
+
 route('POST', '/api/notifications', function () {
-    actor(); $data = body(); notify((string)requireField($data, 'vehicleRegNumber'), (string)requireField($data, 'message'), (string)requireField($data, 'type'));
+    $user = actor(); $data = body();
+    $recipient = $user['role'] === 'DRIVER' ? 'CONTROLLER' : (string)requireField($data, 'vehicleRegNumber');
+    notify($recipient, (string)requireField($data, 'message'), (string)requireField($data, 'type'));
     reply(null, 'Notification created', 201);
 });
 route('GET', '/api/notifications/unread', function () {
-    actor(); reply(array_map(fn($r) => dto($r, [], ['is_read']), rows('SELECT * FROM notifications WHERE is_read = 0 ORDER BY created_at DESC, id DESC')));
+    $user = actor(); reply(array_map(fn($r) => dto($r, [], ['is_read']), notificationsForUser($user, true)));
 });
 route('GET', '/api/notifications', function () {
-    actor(); reply(array_map(fn($r) => dto($r, [], ['is_read']), rows('SELECT * FROM notifications ORDER BY created_at DESC, id DESC')));
+    $user = actor(); reply(array_map(fn($r) => dto($r, [], ['is_read']), notificationsForUser($user)));
 });
-route('PATCH', '/api/notifications/read-all', function () { actor(); query('UPDATE notifications SET is_read = 1 WHERE is_read = 0'); reply(null, 'Notifications marked as read'); });
+route('PATCH', '/api/notifications/read-all', function () {
+    $user = actor(); [$where, $params] = notificationScope($user);
+    query('INSERT IGNORE INTO notification_reads (notification_id, user_id) SELECT n.id, ? FROM notifications n WHERE ' . $where, [$user['id'], ...$params]);
+    reply(null, 'Notifications marked as read');
+});
 route('PATCH', '/api/notifications/{id}/read', function ($p) {
-    actor(); $id = (int)$p['id']; byId('notifications', $id, true); updateRow('notifications', $id, ['is_read' => 1]);
-    reply(dto(byId('notifications', $id, true), [], ['is_read']), 'Notification marked as read');
+    $user = actor(); $id = (int)$p['id'];
+    if (!notificationsForUser($user, false, $id)) fail('Notification not found', 404);
+    query('INSERT IGNORE INTO notification_reads (notification_id, user_id) VALUES (?, ?)', [$id, $user['id']]);
+    $notification = notificationsForUser($user, false, $id)[0];
+    reply(dto($notification, [], ['is_read']), 'Notification marked as read');
 });
 
 function employeeDto(array $employee): array { return dto($employee, ['email_id' => 'email']); }

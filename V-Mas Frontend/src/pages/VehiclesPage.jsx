@@ -426,7 +426,7 @@ const VehiclesPage = () => {
           const text = await err.response.data.text()
           const errorObj = JSON.parse(text)
           errMsg = errorObj.message || errMsg
-        } catch (e) { }
+        } catch { /* Keep the original response error. */ }
       } else if (err.response?.data?.message) {
         errMsg = err.response.data.message
       }
@@ -485,7 +485,7 @@ const VehiclesPage = () => {
           const text = await err.response.data.text()
           const errorObj = JSON.parse(text)
           errMsg = errorObj.message || errMsg
-        } catch (e) { }
+        } catch { /* Keep the original response error. */ }
       } else if (err.response?.data?.message) {
         errMsg = err.response.data.message
       }
@@ -4293,7 +4293,7 @@ const VehiclesPage = () => {
 
               {odometerError && (
                 <div style={{ marginBottom: 16, padding: '10px 14px', borderRadius: 8, background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.35)', color: D.red, fontSize: '0.8rem', fontWeight: 600 }}>
-                  âš  {odometerError}
+                  Warning: {odometerError}
                 </div>
               )}
 
@@ -4352,7 +4352,7 @@ const VehiclesPage = () => {
 
               {fuelModalError && (
                 <div style={{ marginBottom: 16, padding: '10px 14px', borderRadius: 8, background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.35)', color: D.red, fontSize: '0.8rem', fontWeight: 600 }}>
-                  âš  {fuelModalError}
+                  Warning: {fuelModalError}
                 </div>
               )}
 

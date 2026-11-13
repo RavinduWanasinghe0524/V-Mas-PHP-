@@ -28,6 +28,8 @@ Add the remaining faculty and department addresses using the exact dropdown labe
 
 The public status checker requires both the pass reference code and the phone number on the application. It returns status details only.
 
+For an existing database, run `php backend/bin/install-notification-reads.php` once. Notifications are then shown only to their intended user or staff audience, and each user has their own read state.
+
 The PHP routes keep the frontend's `/api/*` paths and `{success, message, data}` response envelope. The original Java code and its committed configuration are not included.
 
 ## Requirements
