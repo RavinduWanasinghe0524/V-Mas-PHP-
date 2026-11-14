@@ -43,6 +43,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci --prefix 'V-Mas Frontend'
 
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high --prefix 'V-Mas Frontend'
+
       - name: Lint frontend
         run: npm run lint --prefix 'V-Mas Frontend'
 

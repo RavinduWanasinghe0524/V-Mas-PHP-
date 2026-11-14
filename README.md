@@ -60,9 +60,11 @@ The older local `vmas_db` schema can be copied to a separate database, then expa
 
 Point the web server document root at `backend/public` and route all `/api/*` requests to `backend/public/index.php`. The included `.htaccess` handles this for Apache when overrides and `mod_rewrite` are enabled. Keep `backend/.env` and `backend/storage` outside public access. Set `APP_ENV=production`, `FRONTEND_URL`, `CORS_ALLOWED_ORIGINS`, and all required database/JWT variables in the server environment.
 
+Before hosting, run `php backend/bin/check-production-config.php` with the production environment. It fails on missing HTTPS origins, database settings, JWT secret, or storage settings. It warns about email addresses until the HOD and Dean maps are filled. Set `APP_URL` to the public PHP API origin and `FRONTEND_URL` to the public frontend origin. Back up the database and any local uploads, then verify a restore on a separate database.
+
 For the frontend, set `VITE_API_BASE_URL=https://your-php-api.example.com/api` at build time. The bundled `vercel.json` only handles SPA navigation; it does not point to the old Spring Boot host.
 
-SendGrid and Twilio are optional. If their environment variables are empty, password-reset email and trip SMS are unavailable. Set `UPLOAD_DISK=s3` with AWS credentials and a bucket for S3 uploads; otherwise local uploads require persistent `backend/storage` across deployments.
+SendGrid, a verified `MAIL_FROM_EMAIL`, and the HOD/Dean email maps are required for the pass approval workflow; without them, applications are saved but approval emails are not sent. Empty SendGrid or Twilio settings also leave password-reset email or trip SMS unavailable. Set `UPLOAD_DISK=s3` with AWS credentials and a bucket for S3 uploads; otherwise local uploads require persistent `backend/storage` across deployments.
 
 ## Verification
 

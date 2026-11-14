@@ -4,6 +4,10 @@ declare(strict_types=1);
 require __DIR__ . '/../src/Core.php';
 loadEnv(__DIR__ . '/../.env');
 date_default_timezone_set('Asia/Colombo');
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header('Referrer-Policy: no-referrer');
+header('Cache-Control: no-store');
 
 $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
 $allowed = array_filter(array_map('trim', explode(',', (string)envv('CORS_ALLOWED_ORIGINS', 'http://localhost:3000'))));
