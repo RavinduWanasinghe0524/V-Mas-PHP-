@@ -283,7 +283,7 @@ const SignupSlide = ({ onSwitch, isActive }) => {
     e.preventDefault();
     setError('');
     if (formData.password !== formData.confirmPassword) { setError('Passwords do not match'); return; }
-    if (formData.password.length < 6) { setError('Password must be at least 6 characters'); return; }
+    if (formData.password.length < 8) { setError('Password must be at least 8 characters'); return; }
     setLoading(true);
     const { confirmPassword, ...data } = formData;
     if (!data.profilePicture) data.profilePicture = `https://ui-avatars.com/api/?name=${encodeURIComponent(data.userName)}&background=2563eb&color=fff&size=128&bold=true`;

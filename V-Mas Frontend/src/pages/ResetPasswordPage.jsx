@@ -133,8 +133,8 @@ const ResetPasswordPage = () => {
     const errs = {};
     if (!newPassword) {
       errs.newPassword = 'Password is required.';
-    } else if (newPassword.length < 6) {
-      errs.newPassword = 'Password must be at least 6 characters.';
+    } else if (newPassword.length < 8) {
+      errs.newPassword = 'Password must be at least 8 characters.';
     }
     if (!confirmPassword) {
       errs.confirmPassword = 'Please confirm your password.';

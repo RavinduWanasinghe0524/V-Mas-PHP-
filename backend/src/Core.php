@@ -156,6 +156,7 @@ function actor(): array {
     if (!$claims) fail('Invalid or expired token', 401);
     $current = row('SELECT * FROM users WHERE id = ? AND is_deleted = 0 AND account_status = ?', [(int)($claims['uid'] ?? 0), 'ACTIVE']);
     if (!$current) fail('Account is unavailable', 401);
+    if (!in_array($current['role'], ['ADMIN', 'CONTROLLER', 'DRIVER'], true)) fail('Account role is invalid', 403);
     return $current;
 }
 function requireRole(string ...$roles): array {

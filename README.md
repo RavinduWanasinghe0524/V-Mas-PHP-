@@ -66,5 +66,5 @@ SendGrid and Twilio are optional. If their environment variables are empty, pass
 
 ## Verification
 
-Run `php -l` for every file in `backend/src`, `backend/public`, and `backend/bin`; run `php backend/tests/smoke.php` for pure PHP checks. Run `npm run build` in `V-Mas Frontend` for the copied frontend. Full API integration requires a configured MySQL database and service credentials.
+Run `php -l` for every file in `backend/src`, `backend/public`, and `backend/bin`; run `php backend/tests/smoke.php` for pure PHP checks. Run `npm run lint` and `npm run build` in `V-Mas Frontend`. With local MySQL configured, run `php backend/tests/fuel-report-access.php` to check fuel ownership and approved totals; its fixtures are rolled back. Full email integration requires service credentials.
 

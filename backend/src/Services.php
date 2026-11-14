@@ -117,13 +117,26 @@ route('PUT', '/api/services/{id}', function ($p) {
     $user = actor(); $id = (int)$p['id']; $old = serviceById($id); if (!serviceVisible($old, $user)) fail('Access denied', 403);
     if ($user['role'] === 'DRIVER' && $old['created_by'] !== $user['user_name']) fail('You can only edit records you created', 403);
     $changes = fields(body(), SERVICE_FIELDS);
+    foreach (['current_mileage_km', 'service_cost'] as $field) {
+        if (array_key_exists($field, $changes) && (!is_numeric($changes[$field]) || (float)$changes[$field] < 0)) fail('Invalid service mileage or cost');
+    }
     if (isset($changes['vehicle_reg_number'])) {
         $vehicle = vehicleByReg($changes['vehicle_reg_number']);
         if ($user['role'] === 'DRIVER' && !driverMayUseVehicle($user, $vehicle)) fail('Vehicle is not assigned to you', 403);
     }
     if (($changes['service_type'] ?? $old['service_type']) === 'OTHER' && empty(trim((string)($changes['service_type_detail'] ?? $old['service_type_detail'] ?? '')))) fail('Service type detail is required for OTHER');
     if ($user['role'] === 'DRIVER') $changes['status'] = 'PENDING';
-    serviceAudit($id, $user['user_name'], $old, $changes); updateRow('service_records', $id, $changes);
+    db()->beginTransaction();
+    try {
+        serviceAudit($id, $user['user_name'], $old, $changes);
+        updateRow('service_records', $id, $changes);
+        if (($changes['status'] ?? $old['status']) === 'APPROVED') {
+            $vehicle = vehicleByReg($changes['vehicle_reg_number'] ?? $old['vehicle_reg_number']);
+            $mileage = (float)($changes['current_mileage_km'] ?? $old['current_mileage_km']);
+            if ($mileage > (float)$vehicle['current_mileage_km']) updateRow('vehicles', (int)$vehicle['id'], ['current_mileage_km' => $mileage]);
+        }
+        db()->commit();
+    } catch (Throwable $e) { db()->rollBack(); throw $e; }
     reply(serviceDto(serviceById($id)), 'Service record updated');
 });
 route('DELETE', '/api/services/{id}', function ($p) {

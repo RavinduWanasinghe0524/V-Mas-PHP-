@@ -85,7 +85,7 @@ route('PUT', '/api/users/me/password', function () {
     $user = actor(); $data = body();
     if (!password_verify((string)($data['currentPassword'] ?? ''), $user['password'])) fail('Current password is incorrect');
     $password = (string)requireField($data, 'newPassword');
-    if (strlen($password) < 6 || $password !== ($data['confirmPassword'] ?? null)) fail('New passwords must match and have at least 6 characters');
+    if (strlen($password) < 8 || $password !== ($data['confirmPassword'] ?? null)) fail('New passwords must match and have at least 8 characters');
     updateRow('users', (int)$user['id'], ['password' => password_hash($password, PASSWORD_BCRYPT)]);
     reply(null, 'Password changed');
 });
@@ -109,8 +109,17 @@ route('POST', '/api/users', function () {
 route('PUT', '/api/users/{id}', function ($p) {
     $actor = requireRole('ADMIN', 'CONTROLLER');
     $user = byId('users', (int)$p['id']);
-    $changes = fields(body(), USER_FIELDS);
+    $data = body();
+    $changes = fields($data, USER_FIELDS);
+    if (isset($changes['user_name']) && $changes['user_name'] !== $user['user_name']) fail('Username cannot be changed');
+    unset($changes['user_name']);
+    if (isset($changes['role']) && !in_array($changes['role'], ['ADMIN', 'CONTROLLER', 'DRIVER'], true)) fail('Invalid role');
+    if (isset($changes['account_status']) && !in_array($changes['account_status'], ['PENDING', 'ACTIVE', 'INACTIVE'], true)) fail('Invalid account status');
     if ($actor['role'] !== 'ADMIN' && (($changes['role'] ?? $user['role']) === 'ADMIN' || $user['role'] === 'ADMIN')) fail('Only administrators can manage administrators', 403);
+    if (!empty($data['password'])) {
+        if (strlen((string)$data['password']) < 8) fail('Password must have at least 8 characters');
+        $changes['password'] = password_hash((string)$data['password'], PASSWORD_BCRYPT);
+    }
     updateRow('users', (int)$p['id'], $changes);
     reply(userDto(byId('users', (int)$p['id'])), 'User updated');
 });

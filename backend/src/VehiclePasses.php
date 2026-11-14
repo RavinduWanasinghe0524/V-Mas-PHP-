@@ -14,13 +14,21 @@ function emailPassApprover(array $pass, string $stage): bool {
     $email = passApproverEmail($stage, $pass['faculty'], $pass['department']);
     if (!filter_var($email, FILTER_VALIDATE_EMAIL) || !envv('SENDGRID_API_KEY', '')) return false;
     $token = bin2hex(random_bytes(32));
+    $hash = hash('sha256', $token);
     updateRow('vehicle_passes', (int)$pass['id'], [
-        'approval_token_hash' => hash('sha256', $token),
+        'approval_token_hash' => $hash,
         'approval_token_expires_at' => date('Y-m-d H:i:s', time() + 14 * 86400),
     ]);
     $url = rtrim((string)envv('FRONTEND_URL', 'http://localhost:3000'), '/') . '/approve-pass?token=' . $token;
     $label = $stage === 'HOD' ? 'Head of Department' : 'Dean';
-    return sendEmail($email, "Vehicle pass {$pass['pass_code']} needs $label approval", '<p>A vehicle pass application needs your review.</p><p>Faculty: ' . htmlspecialchars($pass['faculty'], ENT_QUOTES) . '<br>Department: ' . htmlspecialchars($pass['department'], ENT_QUOTES) . '</p><p><a href="' . htmlspecialchars($url, ENT_QUOTES) . '">Review application</a></p>');
+    try {
+        $sent = sendEmail($email, "Vehicle pass {$pass['pass_code']} needs $label approval", '<p>A vehicle pass application needs your review.</p><p>Faculty: ' . htmlspecialchars($pass['faculty'], ENT_QUOTES) . '<br>Department: ' . htmlspecialchars($pass['department'], ENT_QUOTES) . '</p><p><a href="' . htmlspecialchars($url, ENT_QUOTES) . '">Review application</a></p>');
+    } catch (Throwable $error) {
+        $sent = false;
+        error_log('Pass approval email failed: ' . $error->getMessage());
+    }
+    if (!$sent) query('UPDATE vehicle_passes SET approval_token_hash = ?, approval_token_expires_at = ? WHERE id = ? AND approval_token_hash = ?', [$pass['approval_token_hash'] ?? null, $pass['approval_token_expires_at'] ?? null, $pass['id'], $hash]);
+    return $sent;
 }
 
 route('GET', '/api/vehicle-passes/approval/{token}', function ($p) {
