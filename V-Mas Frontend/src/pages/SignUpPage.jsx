@@ -50,7 +50,7 @@ const SignUpPage = () => {
     e.preventDefault();
     setError('');
     if (formData.password !== formData.confirmPassword) { setError('Passwords do not match'); return; }
-    if (formData.password.length < 6)                   { setError('Password must be at least 6 characters'); return; }
+    if (formData.password.length < 8)                   { setError('Password must be at least 8 characters'); return; }
     setLoading(true);
     const { confirmPassword, ...submitData } = formData;
     if (!submitData.profilePicture) {

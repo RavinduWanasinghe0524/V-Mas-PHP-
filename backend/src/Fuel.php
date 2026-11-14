@@ -17,7 +17,7 @@ function efficiencyStatus(?float $value): string {
 }
 function fuelDto(array $log): array {
     $dto = dto($log, [], ['is_updated', 'is_deleted']);
-    $prev = row('SELECT mileage FROM fuel_logs WHERE vehicle_reg_number = ? AND (date < ? OR (date = ? AND id < ?)) AND COALESCE(is_deleted, 0) = 0 ORDER BY date DESC, id DESC LIMIT 1', [$log['vehicle_reg_number'], $log['date'], $log['date'], $log['id']]);
+    $prev = row("SELECT mileage FROM fuel_logs WHERE vehicle_reg_number = ? AND status = 'APPROVED' AND (date < ? OR (date = ? AND id < ?)) AND COALESCE(is_deleted, 0) = 0 ORDER BY date DESC, id DESC LIMIT 1", [$log['vehicle_reg_number'], $log['date'], $log['date'], $log['id']]);
     $dto['fuelEfficiency'] = $prev && (float)$log['liters'] > 0 && (float)$log['mileage'] > (float)$prev['mileage'] ? round(((float)$log['mileage'] - (float)$prev['mileage']) / (float)$log['liters'], 2) : null;
     return $dto;
 }
@@ -25,6 +25,10 @@ function fuelOwned(array $log, array $user): bool {
     if ($log['driver_username'] === $user['user_name']) return true;
     $reg = scalar('SELECT registration_no FROM vehicles WHERE driver_id = ?', [$user['id']]);
     return $reg && $log['vehicle_reg_number'] === $reg;
+}
+function fuelReportScope(array $user): array {
+    if ($user['role'] !== 'DRIVER') return ['', []];
+    return [' AND (driver_username = ? OR vehicle_reg_number IN (SELECT registration_no FROM vehicles WHERE driver_id = ? AND is_deleted = 0))', [$user['user_name'], $user['id']]];
 }
 function fuelValues(array $data): array {
     $reg = (string)requireField($data, 'vehicleRegNumber'); vehicleByReg($reg);
@@ -39,8 +43,9 @@ function fuelValues(array $data): array {
     if ($latest && (float)$values['mileage'] < (float)$latest['mileage']) fail('Mileage cannot be lower than the previous fuel log');
     return $values;
 }
-function vehicleFuelReport(string $reg): array {
-    $logs = rows('SELECT * FROM fuel_logs WHERE vehicle_reg_number = ? AND COALESCE(is_deleted, 0) = 0 ORDER BY date, id', [$reg]);
+function vehicleFuelReport(string $reg, ?array $user = null): array {
+    $logs = rows("SELECT * FROM fuel_logs WHERE vehicle_reg_number = ? AND status = 'APPROVED' AND COALESCE(is_deleted, 0) = 0 ORDER BY date, id", [$reg]);
+    if ($user && $user['role'] === 'DRIVER') $logs = array_values(array_filter($logs, fn($log) => fuelOwned($log, $user)));
     $fillUps = []; $sum = 0.0; $count = 0; $totalLiters = 0.0; $totalCost = 0.0; $totalKm = 0.0; $latest = null;
     foreach ($logs as $index => $log) {
         $km = null; $eff = null;
@@ -95,41 +100,51 @@ route('POST', '/api/fuel/add', function () {
     reply(fuelDto(byId('fuel_logs', $id)), 'Fuel log added', 201);
 });
 route('GET', '/api/fuel/summary', function () {
-    actor(); $totals = ['Diesel' => 0.0, 'Petrol' => 0.0]; $cost = 0.0;
-    foreach (rows('SELECT fuel_type, liters, total_cost FROM fuel_logs WHERE YEAR(date) = YEAR(CURDATE()) AND MONTH(date) = MONTH(CURDATE()) AND COALESCE(is_deleted, 0) = 0') as $log) {
+    [$scope, $params] = fuelReportScope(actor()); $totals = ['Diesel' => 0.0, 'Petrol' => 0.0]; $cost = 0.0;
+    foreach (rows("SELECT fuel_type, liters, total_cost FROM fuel_logs WHERE YEAR(date) = YEAR(CURDATE()) AND MONTH(date) = MONTH(CURDATE()) AND status = 'APPROVED' AND COALESCE(is_deleted, 0) = 0" . $scope, $params) as $log) {
         $group = fuelTypeGroup($log['fuel_type']); if ($group) $totals[$group] += (float)$log['liters']; $cost += (float)$log['total_cost'];
     }
     reply(['totalDiesel' => $totals['Diesel'], 'totalPetrol' => $totals['Petrol'], 'totalVolume' => array_sum($totals), 'totalCost' => $cost]);
 });
 route('GET', '/api/fuel/chart', function () {
-    actor(); $months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+    [$scope, $params] = fuelReportScope(actor()); $months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
     $data = ['Diesel' => array_fill(0, 12, 0.0), 'Petrol' => array_fill(0, 12, 0.0)];
-    foreach (rows('SELECT MONTH(date) AS month_no, fuel_type, SUM(liters) AS liters FROM fuel_logs WHERE YEAR(date) = YEAR(CURDATE()) AND COALESCE(is_deleted, 0) = 0 GROUP BY MONTH(date), fuel_type') as $r) {
+    foreach (rows("SELECT MONTH(date) AS month_no, fuel_type, SUM(liters) AS liters FROM fuel_logs WHERE YEAR(date) = YEAR(CURDATE()) AND status = 'APPROVED' AND COALESCE(is_deleted, 0) = 0" . $scope . ' GROUP BY MONTH(date), fuel_type', $params) as $r) {
         $group = fuelTypeGroup($r['fuel_type']); if ($group) $data[$group][(int)$r['month_no'] - 1] += (float)$r['liters'];
     }
     reply(['months' => $months, 'data' => $data]);
 });
 route('GET', '/api/fuel/stats', function () {
-    actor(); $result = [];
-    foreach (rows('SELECT DISTINCT vehicle_reg_number FROM fuel_logs WHERE COALESCE(is_deleted, 0) = 0') as $r) {
-        $report = vehicleFuelReport($r['vehicle_reg_number']);
+    $user = actor(); [$scope, $params] = fuelReportScope($user); $result = [];
+    foreach (rows("SELECT DISTINCT vehicle_reg_number FROM fuel_logs WHERE status = 'APPROVED' AND COALESCE(is_deleted, 0) = 0" . $scope, $params) as $r) {
+        $report = vehicleFuelReport($r['vehicle_reg_number'], $user);
         $result[] = ['vehicleRegNumber' => $r['vehicle_reg_number'], 'fuelEfficiency' => $report['latestEfficiency'], 'totalSpending' => $report['totalCost'], 'efficiencyStatus' => $report['efficiencyStatus']];
     }
     reply($result);
 });
 route('GET', '/api/fuel/efficiency', function () {
-    requireRole('ADMIN', 'CONTROLLER'); $vehicles = []; $averages = []; $counts = ['Good' => 0, 'Moderate' => 0, 'Low Efficiency' => 0];
-    foreach (rows('SELECT DISTINCT vehicle_reg_number FROM fuel_logs WHERE COALESCE(is_deleted, 0) = 0') as $r) {
-        $report = vehicleFuelReport($r['vehicle_reg_number']); $vehicles[] = $report;
+    $user = actor(); $vehicles = []; $averages = []; $counts = ['Good' => 0, 'Moderate' => 0, 'Low Efficiency' => 0];
+    [$scope, $params] = fuelReportScope($user);
+    foreach (rows("SELECT DISTINCT vehicle_reg_number FROM fuel_logs WHERE status = 'APPROVED' AND COALESCE(is_deleted, 0) = 0" . $scope, $params) as $r) {
+        $report = vehicleFuelReport($r['vehicle_reg_number'], $user); $vehicles[] = $report;
         if ($report['averageEfficiency'] !== null) { $averages[] = $report['averageEfficiency']; $counts[$report['efficiencyStatus']]++; }
     }
     reply(['fleetAverageEfficiency' => $averages ? round(array_sum($averages) / count($averages), 2) : null, 'totalVehicles' => count($vehicles), 'goodEfficiencyCount' => $counts['Good'], 'moderateEfficiencyCount' => $counts['Moderate'], 'lowEfficiencyCount' => $counts['Low Efficiency'], 'vehicles' => $vehicles]);
 });
 route('GET', '/api/fuel/controller/deleted', function () { requireRole('ADMIN', 'CONTROLLER'); reply(array_map('fuelDto', allRows('fuel_logs', true))); });
 route('GET', '/api/fuel/all', function () { requireRole('ADMIN', 'CONTROLLER'); reply(array_map('fuelDto', allRows('fuel_logs'))); });
-route('GET', '/api/fuel/vehicle/{vehicleRegNumber}', function ($p) { actor(); reply(array_map('fuelDto', rows('SELECT * FROM fuel_logs WHERE vehicle_reg_number = ? AND COALESCE(is_deleted, 0) = 0 ORDER BY date DESC, id DESC', [$p['vehicleRegNumber']]))); });
+route('GET', '/api/fuel/vehicle/{vehicleRegNumber}', function ($p) {
+    $user = actor();
+    $logs = rows('SELECT * FROM fuel_logs WHERE vehicle_reg_number = ? AND COALESCE(is_deleted, 0) = 0 ORDER BY date DESC, id DESC', [$p['vehicleRegNumber']]);
+    if ($user['role'] === 'DRIVER') $logs = array_values(array_filter($logs, fn($log) => fuelOwned($log, $user)));
+    reply(array_map('fuelDto', $logs));
+});
 route('GET', '/api/fuel/controller/search/{id}', function ($p) { requireRole('ADMIN', 'CONTROLLER'); reply(fuelDto(byId('fuel_logs', (int)$p['id']))); });
-route('GET', '/api/fuel/log/{id}', function ($p) { actor(); reply(fuelDto(byId('fuel_logs', (int)$p['id']))); });
+route('GET', '/api/fuel/log/{id}', function ($p) {
+    $user = actor(); $log = byId('fuel_logs', (int)$p['id']);
+    if ($user['role'] === 'DRIVER' && !fuelOwned($log, $user)) fail('Access denied', 403);
+    reply(fuelDto($log));
+});
 route('POST', '/api/fuel/controller/add', function () {
     $user = requireRole('ADMIN', 'CONTROLLER'); $values = fuelValues(body());
     $values['uploaded_by'] = $user['user_name']; $values['status'] = 'APPROVED';

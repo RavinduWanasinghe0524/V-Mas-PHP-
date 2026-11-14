@@ -43,5 +43,8 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci --prefix 'V-Mas Frontend'
 
+      - name: Lint frontend
+        run: npm run lint --prefix 'V-Mas Frontend'
+
       - name: Build frontend
         run: npm run build --prefix 'V-Mas Frontend'

@@ -455,12 +455,12 @@ const UsersPage = () => {
       setError('Please enter a valid email address.')
       return
     }
-    if (!editingUser && (!formData.password || formData.password.length < 6)) {
-      setError('Password must be at least 6 characters long.')
+    if (!editingUser && (!formData.password || formData.password.length < 8)) {
+      setError('Password must be at least 8 characters long.')
       return
     }
-    if (editingUser && formData.password && formData.password.length < 6) {
-      setError('Password must be at least 6 characters long.')
+    if (editingUser && formData.password && formData.password.length < 8) {
+      setError('Password must be at least 8 characters long.')
       return
     }
 
@@ -1562,7 +1562,7 @@ const UsersPage = () => {
               <div className="form-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px 30px', marginBottom: 32 }}>
                 <div>
                   <label style={labelStyle}>Username</label>
-                  <input type="text" name="userName" value={formData.userName} onChange={handleChange} required style={inputStyle} onFocus={onFocus} onBlur={onBlur} />
+                  <input type="text" name="userName" value={formData.userName} onChange={handleChange} readOnly={Boolean(editingUser)} required style={inputStyle} onFocus={onFocus} onBlur={onBlur} />
                 </div>
                 <div>
                   <label style={labelStyle}>Email</label>
