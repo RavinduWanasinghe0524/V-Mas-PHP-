@@ -68,5 +68,5 @@ SendGrid, a verified `MAIL_FROM_EMAIL`, and the HOD/Dean email maps are required
 
 ## Verification
 
-Run `php -l` for every file in `backend/src`, `backend/public`, and `backend/bin`; run `php backend/tests/smoke.php` for pure PHP checks. Run `npm run lint` and `npm run build` in `V-Mas Frontend`. With local MySQL configured, run `php backend/tests/vehicle-legacy-enums.php` to check vehicle enum compatibility and `php backend/tests/fuel-report-access.php` to check fuel ownership and approved totals; the fuel/report fixtures are rolled back. Full email integration requires service credentials.
+Run `php -l` for every file in `backend/src`, `backend/public`, and `backend/bin`; run `php backend/tests/smoke.php` for pure PHP checks. Run `npm run lint` and `npm run build` in `V-Mas Frontend`. With local MySQL configured, run `php backend/tests/vehicle-legacy-enums.php` to check vehicle enum compatibility and `php backend/tests/fuel-report-access.php` to check fuel ownership and approved totals; the fuel/report fixtures are rolled back. With the local API running, `php backend/tests/admin-readonly-api.php` checks administrator GET endpoints without changing records. Full email integration requires service credentials.
 

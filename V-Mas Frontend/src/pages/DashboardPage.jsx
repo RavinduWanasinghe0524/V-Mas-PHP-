@@ -2090,6 +2090,7 @@ const DashboardPage = () => {
               const computeVehicleStatus = (vehicle) => {
                 const backendStatus = String(vehicle.status || '').toUpperCase()
                 if (backendStatus === 'INACTIVE') return 'INACTIVE'
+                if (backendStatus === 'SERVICE' || backendStatus === 'IN_SERVICE') return 'IN_SERVICE'
                 const reg = cleanReg(vehicle.registrationNo)
                 const startedJob = activeTrips.find(t => {
                   const tReg = cleanReg(t.vehicleRegNumber)
