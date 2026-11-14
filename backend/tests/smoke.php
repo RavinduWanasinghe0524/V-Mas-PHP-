@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require __DIR__ . '/../src/Core.php';
 require __DIR__ . '/../src/PassFaculties.php';
+require __DIR__ . '/../src/VehiclePasses.php';
 putenv('JWT_SECRET=smoke-test-secret-that-is-long-enough-for-hs256');
 
 function check(bool $condition, string $message): void { if (!$condition) throw new RuntimeException($message); }
@@ -17,4 +18,8 @@ check(count(PASS_FACULTIES) === 8, 'Expected eight faculties');
 foreach (PASS_FACULTIES as $faculty => $departments) {
     check($faculty !== '' && count($departments) > 0 && count($departments) === count(array_unique($departments)), 'Invalid faculty departments');
 }
+putenv('PASS_HOD_EMAILS_JSON={"Computing|Software Engineering":"hod@example.edu"}');
+putenv('PASS_DEAN_EMAILS_JSON={"Computing":"dean@example.edu"}');
+check(passApproverEmail('HOD', 'Computing', 'Software Engineering') === 'hod@example.edu', 'HOD routing failed');
+check(passApproverEmail('DEAN', 'Computing', 'Software Engineering') === 'dean@example.edu', 'Dean routing failed');
 echo "Core smoke checks passed\n";
