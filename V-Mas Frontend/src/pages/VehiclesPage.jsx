@@ -1075,7 +1075,7 @@ const VehiclesPage = () => {
 
   // ── Compute real-time vehicle status from active trip data ───────────────
   const computeVehicleStatus = (vehicle) => {
-    const backendStatus = (vehicle.status || '').toUpperCase()
+    const backendStatus = String(vehicle.status || '').toUpperCase()
     if (backendStatus === 'INACTIVE') return 'INACTIVE'
     const reg = (vehicle.registrationNo || '').toLowerCase().trim()
     const startedJob = activeTrips.find(t => {
