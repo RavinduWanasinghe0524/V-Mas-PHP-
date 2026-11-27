@@ -3522,7 +3522,16 @@ select.form-control option {
 }
 
 /* ── Fuel Pages Responsive Styling ── */
+.fuel-management-page .main-content {
+  min-width: 0;
+}
+
+.fuel-management-page .stats-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)) !important;
+}
+
 .fuel-log-row {
+  flex-wrap: wrap;
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
