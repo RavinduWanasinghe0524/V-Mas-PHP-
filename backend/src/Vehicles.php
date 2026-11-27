@@ -2,6 +2,33 @@
 declare(strict_types=1);
 
 const VEHICLE_FIELDS = ['registration_no', 'chassis_no', 'engine_no', 'manufacturer', 'model', 'year', 'current_mileage_km', 'initial_mileage_km', 'status', 'fuel_type', 'vehicle_type', 'fuel_capacity', 'insurance_expiry_date', 'license_expiry_date', 'vehicle_image', 'deactivation_reason'];
+const VEHICLE_ENUMS = ['status' => ['ACTIVE', 'INACTIVE', 'SERVICE', 'AVAILABLE'], 'fuel_type' => ['DIESEL', 'SUPER_DIESEL', 'PETROL', 'SUPER_PETROL']];
+
+function vehicleEnum(string $column, mixed $value, bool $numericStorage = false): string|int|null {
+    if ($value === null) return null;
+    $options = VEHICLE_ENUMS[$column];
+    if (is_numeric($value) && (string)(int)$value === (string)$value) {
+        if (!array_key_exists((int)$value, $options)) fail("Invalid vehicle $column value");
+        return $numericStorage ? (int)$value : $options[(int)$value];
+    }
+    $name = strtoupper(trim((string)$value));
+    $index = array_search($name, $options, true);
+    if ($index === false) fail("Invalid vehicle $column value");
+    return $numericStorage ? $index : $name;
+}
+
+function vehicleStorageValues(array $values): array {
+    static $numericColumns = [];
+    foreach (VEHICLE_ENUMS as $column => $_) {
+        if (!array_key_exists($column, $values) || $values[$column] === null) continue;
+        if (!array_key_exists($column, $numericColumns)) {
+            $type = scalar('SELECT DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?', ['vehicles', $column]);
+            $numericColumns[$column] = in_array(strtolower((string)$type), ['tinyint', 'smallint', 'mediumint', 'int', 'bigint'], true);
+        }
+        $values[$column] = vehicleEnum($column, $values[$column], $numericColumns[$column]);
+    }
+    return $values;
+}
 
 function vehicleDto(array $vehicle): array {
     $driver = null;
@@ -9,6 +36,8 @@ function vehicleDto(array $vehicle): array {
     if (!$driver) $driver = scalar("SELECT driver_username FROM trips WHERE vehicle_reg_number = ? AND status = 'STARTED' AND is_deleted = 0 ORDER BY id DESC LIMIT 1", [$vehicle['registration_no']]);
     unset($vehicle['driver_id'], $vehicle['vehicle_name']);
     $result = dto($vehicle, ['chassis_no' => 'chassisNumber', 'engine_no' => 'engineNumber', 'is_deleted' => 'deleted'], ['is_deleted']);
+    if ($result['status'] !== null) $result['status'] = vehicleEnum('status', $result['status']);
+    if ($result['fuelType'] !== null) $result['fuelType'] = vehicleEnum('fuel_type', $result['fuelType']);
     $result['driverUsername'] = $driver ?: null;
     return $result;
 }
@@ -35,7 +64,7 @@ route('POST', '/api/vehicles', function () {
     $values['vehicle_name'] = trim(($values['manufacturer'] ?? '') . ' ' . ($values['model'] ?? '')) ?: 'Unknown';
     $values['initial_mileage_km'] ??= $values['current_mileage_km'] ?? 0;
     $values['status'] ??= 'AVAILABLE'; $values['vehicle_type'] ??= 'CAR';
-    $id = insertRow('vehicles', $values);
+    $id = insertRow('vehicles', vehicleStorageValues($values));
     reply(vehicleDto(byId('vehicles', $id)), 'Vehicle created', 201);
 });
 route('PUT', '/api/vehicles/{id}', function ($p) {
@@ -47,7 +76,7 @@ route('PUT', '/api/vehicles/{id}', function ($p) {
         $changes['vehicle_name'] = trim(($changes['manufacturer'] ?? $old['manufacturer'] ?? '') . ' ' . ($changes['model'] ?? $old['model'] ?? '')) ?: 'Unknown';
     }
     $changes['updated_at'] = now(); $changes['updated_by'] = $user['user_name'];
-    updateRow('vehicles', $id, $changes);
+    updateRow('vehicles', $id, vehicleStorageValues($changes));
     reply(vehicleDto(byId('vehicles', $id)), 'Vehicle updated');
 });
 route('DELETE', '/api/vehicles/{id}', function ($p) {

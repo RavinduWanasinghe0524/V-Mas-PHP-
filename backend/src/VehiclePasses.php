@@ -10,9 +10,9 @@ function passApproverEmail(string $stage, string $faculty, string $department): 
     return is_array($map) ? (string)($map[$stage === 'HOD' ? "$faculty|$department" : $faculty] ?? '') : '';
 }
 
-function emailPassApprover(array $pass, string $stage): bool {
+function emailPassApprover(array $pass, string $stage, ?callable $sender = null): bool {
     $email = passApproverEmail($stage, $pass['faculty'], $pass['department']);
-    if (!filter_var($email, FILTER_VALIDATE_EMAIL) || !envv('SENDGRID_API_KEY', '')) return false;
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL) || ($sender === null && !envv('SENDGRID_API_KEY', ''))) return false;
     $token = bin2hex(random_bytes(32));
     $hash = hash('sha256', $token);
     updateRow('vehicle_passes', (int)$pass['id'], [
@@ -22,7 +22,7 @@ function emailPassApprover(array $pass, string $stage): bool {
     $url = rtrim((string)envv('FRONTEND_URL', 'http://localhost:3000'), '/') . '/approve-pass?token=' . $token;
     $label = $stage === 'HOD' ? 'Head of Department' : 'Dean';
     try {
-        $sent = sendEmail($email, "Vehicle pass {$pass['pass_code']} needs $label approval", '<p>A vehicle pass application needs your review.</p><p>Faculty: ' . htmlspecialchars($pass['faculty'], ENT_QUOTES) . '<br>Department: ' . htmlspecialchars($pass['department'], ENT_QUOTES) . '</p><p><a href="' . htmlspecialchars($url, ENT_QUOTES) . '">Review application</a></p>');
+        $sent = ($sender ?? 'sendEmail')($email, "Vehicle pass {$pass['pass_code']} needs $label approval", '<p>A vehicle pass application needs your review.</p><p>Faculty: ' . htmlspecialchars($pass['faculty'], ENT_QUOTES) . '<br>Department: ' . htmlspecialchars($pass['department'], ENT_QUOTES) . '</p><p><a href="' . htmlspecialchars($url, ENT_QUOTES) . '">Review application</a></p>');
     } catch (Throwable $error) {
         $sent = false;
         error_log('Pass approval email failed: ' . $error->getMessage());
@@ -37,10 +37,10 @@ route('GET', '/api/vehicle-passes/approval/{token}', function ($p) {
     reply(['passCode' => $pass['pass_code'], 'applicantName' => $pass['applicant_name'], 'faculty' => $pass['faculty'], 'department' => $pass['department'], 'vehicleRegNumber' => $pass['vehicle_reg_number'], 'status' => $pass['status']]);
 });
 
-route('POST', '/api/vehicle-passes/approval/{token}', function ($p) {
-    $decision = strtoupper((string)(body()['decision'] ?? ''));
+function decidePassApproval(string $token, string $decision, ?callable $sender = null): array {
+    $decision = strtoupper($decision);
     if (!in_array($decision, ['APPROVE', 'REJECT'], true)) fail('Invalid decision');
-    $hash = hash('sha256', $p['token']);
+    $hash = hash('sha256', $token);
     $pass = row('SELECT * FROM vehicle_passes WHERE approval_token_hash = ? AND approval_token_expires_at > ? AND status IN (?, ?)', [$hash, now(), 'PENDING_HOD', 'PENDING_DEAN']);
     if (!$pass) fail('Approval link is invalid or expired', 404);
     $isHod = $pass['status'] === 'PENDING_HOD';
@@ -48,8 +48,13 @@ route('POST', '/api/vehicle-passes/approval/{token}', function ($p) {
     $stmt = db()->prepare('UPDATE vehicle_passes SET status = ?, approval_token_hash = NULL, approval_token_expires_at = NULL, updated_at = ?, ' . ($decision === 'APPROVE' ? ($isHod ? 'hod_approved_at' : 'dean_approved_at') . ' = ?' : 'rejection_reason = ?') . ' WHERE id = ? AND approval_token_hash = ? AND status = ?');
     $stmt->execute([$next, now(), $decision === 'APPROVE' ? now() : 'Declined by approver', $pass['id'], $hash, $pass['status']]);
     if ($stmt->rowCount() !== 1) fail('This approval has already been used', 409);
-    $emailSent = $next === 'PENDING_DEAN' ? emailPassApprover(byId('vehicle_passes', (int)$pass['id'], true), 'DEAN') : null;
-    reply(['status' => $next, 'emailSent' => $emailSent], $emailSent === false ? 'Decision recorded; Dean email could not be sent' : 'Decision recorded');
+    $emailSent = $next === 'PENDING_DEAN' ? emailPassApprover(byId('vehicle_passes', (int)$pass['id'], true), 'DEAN', $sender) : null;
+    return ['status' => $next, 'emailSent' => $emailSent];
+}
+
+route('POST', '/api/vehicle-passes/approval/{token}', function ($p) {
+    $result = decidePassApproval($p['token'], (string)(body()['decision'] ?? ''));
+    reply($result, $result['emailSent'] === false ? 'Decision recorded; Dean email could not be sent' : 'Decision recorded');
 });
 
 route('POST', '/api/vehicle-passes/{id}/resend-approval', function ($p) {
@@ -81,8 +86,7 @@ function vehiclePassDto(array $row): array {
 }
 
 // ── Public: Submit a Vehicle Pass Application ──────────────────────────────────
-route('POST', '/api/vehicle-passes/apply', function () {
-    $data = body();
+function createPassApplication(array $data, ?callable $sender = null): array {
     $faculty = trim((string)($data['faculty'] ?? ''));
     $department = trim((string)($data['dept'] ?? ''));
     if (!isset(PASS_FACULTIES[$faculty]) || !in_array($department, PASS_FACULTIES[$faculty], true)) fail('Select a valid faculty and department');
@@ -176,8 +180,13 @@ route('POST', '/api/vehicle-passes/apply', function () {
     }
 
     $created = byId('vehicle_passes', $id, true);
-    $emailSent = emailPassApprover($created, 'HOD');
-    reply(vehiclePassDto($created), $emailSent ? 'Vehicle pass application submitted and Head of Department notified' : 'Vehicle pass application saved; Head of Department email is not configured or could not be sent', 201);
+    $emailSent = emailPassApprover($created, 'HOD', $sender);
+    return ['pass' => vehiclePassDto($created), 'emailSent' => $emailSent];
+}
+
+route('POST', '/api/vehicle-passes/apply', function () {
+    $result = createPassApplication(body());
+    reply($result['pass'], $result['emailSent'] ? 'Vehicle pass application submitted and Head of Department notified' : 'Vehicle pass application saved; Head of Department email is not configured or could not be sent', 201);
 });
 
 // ── Public: Check Application Status with both reference and phone ───────────────

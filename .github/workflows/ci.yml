@@ -14,6 +14,25 @@ jobs:
   test-and-build:
     name: test-and-build
     runs-on: ubuntu-latest
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_NAME: vmas_codex_audit_ci
+      DB_USER: root
+      DB_PASSWORD: test
+      JWT_SECRET: ci-only-secret-for-isolated-tests-2026
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -ptest"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
     steps:
       - uses: actions/checkout@v4
 
@@ -29,6 +48,29 @@ jobs:
 
       - name: Run PHP smoke checks
         run: php backend/tests/smoke.php
+
+      - name: Create isolated audit database
+        run: php backend/tests/admin-isolated-db.php create "$DB_NAME"
+
+      - name: Run PHP database checks
+        run: |
+          php backend/tests/vehicle-legacy-enums.php
+          php backend/tests/fuel-report-access.php
+          php backend/tests/notification-access.php
+          php backend/tests/pass-approval-flow.php
+
+      - name: Start isolated PHP API
+        run: |
+          php -S 127.0.0.1:8010 backend/router.php > "$RUNNER_TEMP/vmas-audit-api.log" 2>&1 &
+          for attempt in 1 2 3 4 5; do
+            if curl -fsS http://127.0.0.1:8010/api/health; then exit 0; fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/vmas-audit-api.log"
+          exit 1
+
+      - name: Check admin write API
+        run: php backend/tests/admin-write-api.php http://127.0.0.1:8010
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

@@ -825,7 +825,7 @@ export default function VehicleProfilePage() {
               {(() => {
                 const tc = fuelLogs.reduce((s, l) => s + (l.totalCost || 0), 0)
                 const tl = fuelLogs.reduce((s, l) => s + (l.liters || 0), 0)
-                const ap = fuelLogs.length > 0 ? fuelLogs.reduce((s, l) => s + (l.pricePerLiter || 0), 0) / fuelLogs.length : 0
+                const ap = tl > 0 ? tc / tl : 0
                 return (<>
                   <Card style={{ padding: '18px 20px' }}>
                     <div style={{ fontSize: '0.65rem', color: D.textSub, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6 }}>
@@ -855,7 +855,7 @@ export default function VehicleProfilePage() {
                 </Card>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {fuelLogs.sort((a, b) => new Date(b.date) - new Date(a.date)).map(log => (
+                  {[...fuelLogs].sort((a, b) => new Date(b.date) - new Date(a.date)).map(log => (
                     <Card key={log.id} style={{ padding: '14px 18px' }}>
                       <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
                         <div style={{ width: 38, height: 38, borderRadius: 11, background: 'rgba(34,197,94,0.12)', color: '#22c55e', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -868,7 +868,7 @@ export default function VehicleProfilePage() {
                           </div>
                           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: '0.72rem', color: D.textSub }}>
                             <span>{new Date(log.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
-                            <span>Odometer: {log.currentMileageKm ? `${log.currentMileageKm.toLocaleString()} km` : '—'}</span>
+                            <span>Odometer: {log.mileage != null ? `${Number(log.mileage).toLocaleString()} km` : '—'}</span>
                           </div>
                         </div>
                       </div>
