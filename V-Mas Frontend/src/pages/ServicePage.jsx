@@ -2703,14 +2703,14 @@ const ServicePage = () => {
                       backdropFilter: 'blur(4px)',
                       border: `1px solid var(--border)`,
                     }}>
-                      Read Only
+                      Driver View
                     </span>
                   )}
                 </div>
 
                 <p style={{ margin: '6px 0 0', color: '#f8fafc', fontSize: '0.88rem', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
                   {isDriver
-                    ? 'Browse all service records and track maintenance milestones across the fleet (read-only).'
+                    ? 'View your submitted service records and assigned vehicle maintenance milestones.'
                     : 'Schedule services, manage work orders and minimise fleet downtime.'}
                 </p>
 

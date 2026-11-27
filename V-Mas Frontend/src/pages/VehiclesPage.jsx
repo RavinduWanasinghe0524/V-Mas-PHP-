@@ -1718,14 +1718,14 @@ const VehiclesPage = () => {
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                     <h1 style={{ margin: 0, fontSize: '1.8rem', fontWeight: 800, color: '#fff', letterSpacing: '-0.02em', fontFamily: "'Plus Jakarta Sans', sans-serif" }}>Vehicle Fleet</h1>
-                    {vehicles.length > 0 && (
+                    {targetVehicles.length > 0 && (
                       <span style={{ background: 'var(--primary-light)', color: '#fff', padding: '3px 10px', borderRadius: 999, fontSize: '0.75rem', fontWeight: 700, backdropFilter: 'blur(4px)', border: `1px solid var(--border)` }}>
-                        {vehicles.length} vehicles
+                        {targetVehicles.length} vehicles
                       </span>
                     )}
                   </div>
                   <p style={{ margin: '6px 0 0', color: '#f8fafc', fontSize: '0.88rem', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    Manage and monitor all fleet vehicles in the system.
+                    {isDriver ? 'View the vehicles assigned to you.' : 'Manage and monitor all fleet vehicles in the system.'}
                   </p>
                 </div>
               </div>
@@ -2199,10 +2199,10 @@ const VehiclesPage = () => {
                       <Search size={36} opacity={0.3} />
                     </div>
                     <h3 style={{ margin: 0, fontWeight: 800, color: D.text, fontSize: '1.2rem' }}>
-                      {'No matching vehicles'}
+                      {isDriver ? 'No vehicle assigned' : 'No matching vehicles'}
                     </h3>
                     <p style={{ margin: '10px 0 0', color: D.textSub, fontSize: '1rem', fontWeight: 500 }}>
-                      {'Adjust your search terms or filters to find what you\'re looking for.'}
+                      {isDriver ? 'Your controller will assign a vehicle to you.' : 'Adjust your search terms or filters to find what you\'re looking for.'}
                     </p>
                   </div>
                 ) : (
