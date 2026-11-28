@@ -504,7 +504,7 @@ const FuelManagementPage = () => {
 
   // ── Main Render ─────────────────────────────────────────────────────────
   return (
-    <div className="app-shell" style={{ background: D.bg, minHeight: '100vh' }}>
+    <div className="app-shell fuel-management-page" style={{ background: D.bg, minHeight: '100vh' }}>
       <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       <div className="main-content" style={{ background: D.bg }}>
         <Topbar title="Fuel Management" subtitle="Home / Fuel Management" onMenuToggle={() => setSidebarOpen(o => !o)} />
@@ -559,9 +559,9 @@ const FuelManagementPage = () => {
                 <div style={{ width: 60, height: 60, borderRadius: 18, background: s.bg, color: s.color, display: 'flex', alignItems: 'center', justifyContent: 'center', border: `1px solid ${s.color}30`, flexShrink: 0 }}>
                   {s.icon}
                 </div>
-                <div>
+                <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: '0.75rem', fontWeight: 800, color: D.textSub, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 6 }}>{s.label}</div>
-                  <div style={{ fontSize: '1.6rem', fontWeight: 900, color: D.text, fontFamily: "'Plus Jakarta Sans', sans-serif", lineHeight: 1.1 }}>{s.value}</div>
+                  <div style={{ fontSize: 'clamp(1.1rem, 1.6vw, 1.6rem)', overflowWrap: 'anywhere', fontWeight: 900, color: D.text, fontFamily: "'Plus Jakarta Sans', sans-serif", lineHeight: 1.1 }}>{s.value}</div>
                 </div>
               </div>
             ))}

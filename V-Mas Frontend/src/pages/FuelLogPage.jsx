@@ -384,7 +384,7 @@ const FuelLogPage = () => {
             <div style={{ padding: '28px 32px', borderBottom: `1px solid ${D.border}`, background: D.surfaceHi, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
                 <h3 style={{ margin: 0, fontWeight: 700, color: D.text, fontSize: '1.1rem' }}>Fuel Log History</h3>
-                <p style={{ margin: '3px 0 0', fontSize: '0.85rem', color: D.textSub }}>Recent fuel logs for your vehicle</p>
+                <p style={{ margin: '3px 0 0', fontSize: '0.85rem', color: D.textSub }}>Your recent fuel logs</p>
               </div>
               <div style={{ fontSize: '0.9rem', color: D.textSub, fontWeight: 700, background: D.surface, padding: '8px 16px', borderRadius: 12, border: `1px solid ${D.border}` }}>
                 <span style={{ color: D.purple }}>{myVehicleLogs.length}</span> {myVehicleLogs.length === 1 ? 'Entry' : 'Entries'}
