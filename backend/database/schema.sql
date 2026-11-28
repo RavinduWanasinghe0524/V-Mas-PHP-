@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS users (
   user_name VARCHAR(255) NOT NULL UNIQUE,
   email VARCHAR(255) NOT NULL UNIQUE,
   password VARCHAR(255) NOT NULL,
+  token_version INT UNSIGNED NOT NULL DEFAULT 0,
   role VARCHAR(32) NOT NULL,
   account_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
   profile_picture LONGTEXT NULL,
@@ -172,6 +173,13 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (
   INDEX idx_reset_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS request_limits (
+  limit_key CHAR(64) PRIMARY KEY,
+  hits INT UNSIGNED NOT NULL DEFAULT 0,
+  expires_at DATETIME NOT NULL,
+  INDEX idx_request_limits_expiry (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS employees (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   first_name VARCHAR(255) NOT NULL,
@@ -207,6 +215,9 @@ CREATE TABLE IF NOT EXISTS vehicle_passes (
   rejection_reason TEXT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NULL,
+  is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+  deleted_by VARCHAR(100) NULL,
+  deleted_at DATETIME NULL,
   INDEX idx_pass_code (pass_code),
   INDEX idx_pass_vehicle (vehicle_reg_number),
   INDEX idx_pass_status (status, created_at)

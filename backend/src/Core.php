@@ -112,7 +112,7 @@ function updateRow(string $table, int $id, array $values): void {
 }
 
 function byId(string $table, int $id, bool $includeDeleted = false): array {
-    $soft = ['users', 'vehicles', 'trips', 'service_records'];
+    $soft = ['users', 'vehicles', 'trips', 'service_records', 'vehicle_passes'];
     $where = (!$includeDeleted && in_array($table, $soft, true)) ? ' AND is_deleted = 0' : '';
     if (!$includeDeleted && $table === 'fuel_logs') $where = ' AND (is_deleted = 0 OR is_deleted IS NULL)';
     return row("SELECT * FROM `$table` WHERE id = ?$where", [$id]) ?? fail('Record not found', 404);
@@ -131,7 +131,7 @@ function jwtSecret(): string {
 }
 function jwtIssue(array $user): string {
     $header = b64url(json_encode(['alg' => 'HS256', 'typ' => 'JWT']));
-    $payload = b64url(json_encode(['sub' => $user['user_name'], 'uid' => (int)$user['id'], 'role' => $user['role'], 'iat' => time(), 'exp' => time() + (int)envv('JWT_TTL', '86400')]));
+    $payload = b64url(json_encode(['sub' => $user['user_name'], 'uid' => (int)$user['id'], 'tv' => (int)($user['token_version'] ?? 0), 'role' => $user['role'], 'iat' => time(), 'exp' => time() + (int)envv('JWT_TTL', '86400')]));
     $signature = b64url(hash_hmac('sha256', "$header.$payload", jwtSecret(), true));
     return "$header.$payload.$signature";
 }
@@ -156,6 +156,7 @@ function actor(): array {
     if (!$claims) fail('Invalid or expired token', 401);
     $current = row('SELECT * FROM users WHERE id = ? AND is_deleted = 0 AND account_status = ?', [(int)($claims['uid'] ?? 0), 'ACTIVE']);
     if (!$current) fail('Account is unavailable', 401);
+    if (!isset($claims['tv']) || (int)$claims['tv'] !== (int)$current['token_version']) fail('Session has expired', 401);
     if (!in_array($current['role'], ['ADMIN', 'CONTROLLER', 'DRIVER'], true)) fail('Account role is invalid', 403);
     return $current;
 }
@@ -163,6 +164,14 @@ function requireRole(string ...$roles): array {
     $user = actor();
     if (!in_array($user['role'], $roles, true)) fail('Access denied', 403);
     return $user;
+}
+
+function rateLimit(string $scope, int $limit, int $seconds): void {
+    $bucket = intdiv(time(), $seconds);
+    $key = hash('sha256', $scope . '|' . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . '|' . $bucket);
+    query('INSERT INTO request_limits (limit_key, hits, expires_at) VALUES (?, 1, ?) ON DUPLICATE KEY UPDATE hits = hits + 1', [$key, date('Y-m-d H:i:s', ($bucket + 1) * $seconds)]);
+    if ((int)scalar('SELECT hits FROM request_limits WHERE limit_key = ?', [$key]) > $limit) fail('Too many requests. Please try again later', 429);
+    if (random_int(1, 100) === 1) query('DELETE FROM request_limits WHERE expires_at < NOW()');
 }
 
 function route(string $method, string $pattern, callable $handler): void {

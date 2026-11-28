@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS vehicle_passes (
   rejection_reason TEXT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NULL,
+  is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+  deleted_by VARCHAR(100) NULL,
+  deleted_at DATETIME NULL,
   INDEX idx_pass_code (pass_code),
   INDEX idx_pass_vehicle (vehicle_reg_number),
   INDEX idx_pass_status (status, created_at)

@@ -4,7 +4,7 @@ declare(strict_types=1);
 const USER_FIELDS = ['user_name', 'email', 'role', 'account_status', 'profile_picture', 'phone_number', 'gender', 'nic', 'date_of_birth', 'license_number', 'license_expiry_date', 'license_document_path', 'date_joined', 'experience', 'address'];
 
 function userDto(array $user): array {
-    unset($user['password']);
+    unset($user['password'], $user['token_version']);
     return dto($user, ['is_deleted' => 'deleted'], ['is_deleted']);
 }
 
@@ -35,15 +35,22 @@ route('POST', '/api/auth/register', function () {
 route('POST', '/api/auth/login', function () {
     $data = body();
     $login = (string)($data['userName'] ?? $data['username'] ?? '');
+    rateLimit('login-ip', 120, 60);
+    rateLimit('login:' . strtolower(trim($login)), 10, 60);
     $user = row('SELECT * FROM users WHERE user_name = ? OR email = ?', [$login, $login]);
     if (!$user || !password_verify((string)($data['password'] ?? ''), $user['password'])) fail('Invalid credentials', 401);
     if ((int)$user['is_deleted'] || $user['account_status'] !== 'ACTIVE') fail('Account is not active', 403);
     reply(['token' => jwtIssue($user), 'user' => userDto($user)], 'Login successful');
 });
 
-route('POST', '/api/auth/logout', fn() => reply(null, 'Logged out'));
+route('POST', '/api/auth/logout', function () {
+    $user = actor();
+    query('UPDATE users SET token_version = token_version + 1 WHERE id = ?', [$user['id']]);
+    reply(null, 'Logged out');
+});
 
 route('POST', '/api/auth/forgot-password', function () {
+    rateLimit('forgot-password', 10, 3600);
     $email = trim((string)(body()['email'] ?? ''));
     $user = row('SELECT * FROM users WHERE email = ? AND is_deleted = 0', [$email]);
     if ($user) {
@@ -60,11 +67,11 @@ route('POST', '/api/auth/reset-password', function () {
     $token = (string)requireField($data, 'token');
     $password = (string)requireField($data, 'newPassword');
     if (strlen($password) < 8) fail('Password must have at least 8 characters');
-    $record = row('SELECT * FROM password_reset_tokens WHERE token = ? AND used = 0 AND expires_at > NOW() ORDER BY id DESC LIMIT 1', [hash('sha256', $token)]);
-    if (!$record) fail('Reset link is invalid or expired');
     db()->beginTransaction();
     try {
-        updateRow('users', (int)$record['user_id'], ['password' => password_hash($password, PASSWORD_BCRYPT)]);
+        $record = row('SELECT * FROM password_reset_tokens WHERE token = ? AND used = 0 AND expires_at > NOW() ORDER BY id DESC LIMIT 1 FOR UPDATE', [hash('sha256', $token)]);
+        if (!$record) fail('Reset link is invalid or expired');
+        query('UPDATE users SET password = ?, token_version = token_version + 1 WHERE id = ?', [password_hash($password, PASSWORD_BCRYPT), $record['user_id']]);
         updateRow('password_reset_tokens', (int)$record['id'], ['used' => 1]);
         db()->commit();
     } catch (Throwable $e) { db()->rollBack(); throw $e; }
@@ -86,7 +93,7 @@ route('PUT', '/api/users/me/password', function () {
     if (!password_verify((string)($data['currentPassword'] ?? ''), $user['password'])) fail('Current password is incorrect');
     $password = (string)requireField($data, 'newPassword');
     if (strlen($password) < 8 || $password !== ($data['confirmPassword'] ?? null)) fail('New passwords must match and have at least 8 characters');
-    updateRow('users', (int)$user['id'], ['password' => password_hash($password, PASSWORD_BCRYPT)]);
+    query('UPDATE users SET password = ?, token_version = token_version + 1 WHERE id = ?', [password_hash($password, PASSWORD_BCRYPT), $user['id']]);
     reply(null, 'Password changed');
 });
 
@@ -116,11 +123,17 @@ route('PUT', '/api/users/{id}', function ($p) {
     if (isset($changes['role']) && !in_array($changes['role'], ['ADMIN', 'CONTROLLER', 'DRIVER'], true)) fail('Invalid role');
     if (isset($changes['account_status']) && !in_array($changes['account_status'], ['PENDING', 'ACTIVE', 'INACTIVE'], true)) fail('Invalid account status');
     if ($actor['role'] !== 'ADMIN' && (($changes['role'] ?? $user['role']) === 'ADMIN' || $user['role'] === 'ADMIN')) fail('Only administrators can manage administrators', 403);
-    if (!empty($data['password'])) {
+    $passwordChanged = !empty($data['password']);
+    if ($passwordChanged) {
         if (strlen((string)$data['password']) < 8) fail('Password must have at least 8 characters');
         $changes['password'] = password_hash((string)$data['password'], PASSWORD_BCRYPT);
     }
-    updateRow('users', (int)$p['id'], $changes);
+    db()->beginTransaction();
+    try {
+        updateRow('users', (int)$p['id'], $changes);
+        if ($passwordChanged) query('UPDATE users SET token_version = token_version + 1 WHERE id = ?', [(int)$p['id']]);
+        db()->commit();
+    } catch (Throwable $e) { db()->rollBack(); throw $e; }
     reply(userDto(byId('users', (int)$p['id'])), 'User updated');
 });
 route('DELETE', '/api/users/{id}', function ($p) {

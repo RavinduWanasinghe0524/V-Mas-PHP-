@@ -692,9 +692,11 @@ const TripsPage = () => {
         res = await serviceAPI.createService(payload)
       }
 
+      const submissionWarnings = []
       // Upload attachment if provided
       if (serviceLogFile && (res.data?.data?.id || serviceLogForm.id)) {
-        try { await serviceAPI.uploadAttachment(serviceLogForm.id || res.data.data.id, serviceLogFile) } catch { /* non-fatal */ }
+        try { await serviceAPI.uploadAttachment(serviceLogForm.id || res.data.data.id, serviceLogFile) }
+        catch { submissionWarnings.push('Attachment upload failed; reopen the service record to retry') }
       }
 
       // Notify controllers of new submission or update
@@ -714,11 +716,14 @@ const TripsPage = () => {
           await tripAPI.completeTrip(serviceLogModal.id)
         } catch (err) {
           console.error("Auto-complete job error:", err)
+          submissionWarnings.push('Job could not be completed; complete it from the job list')
         }
       }
 
       closeServiceLog()
-      flash('success', serviceLogForm.id ? 'Pending service details updated & controller notified!' : 'Service details submitted & job completed!')
+      flash(submissionWarnings.length ? 'error' : 'success', submissionWarnings.length
+        ? `Service details saved. ${submissionWarnings.join('. ')}.`
+        : serviceLogForm.id ? 'Pending service details updated!' : 'Service details submitted successfully!')
       loadTrips()
       serviceAPI.getAllServices()
         .then(sRes => setAllServices(sRes.data.data || []))
@@ -867,16 +872,19 @@ const TripsPage = () => {
         const isFuelJob = getJobType(fuelLogModal?.purpose) === 'FUEL'
         const shouldAutoComplete = fuelLogModal?.id && (fuelLogModal.status === 'STARTED' || fuelLogModal.status === 'ASSIGNED') && (isFuelJob || fuelLogModal._completeOnSubmit)
 
+        let completionFailed = false
         if (shouldAutoComplete) {
           try {
             await tripAPI.completeTrip(fuelLogModal.id)
           } catch (err) {
             console.error("Auto-complete fuel job error:", err)
+            completionFailed = true
           }
         }
 
-        flash('success', shouldAutoComplete
-          ? `Fuel details submitted & Job #${fuelLogModal.id} completed! Awaiting controller approval.`
+        flash(completionFailed ? 'error' : 'success', completionFailed
+          ? `Fuel details saved, but Job #${fuelLogModal.id} could not be completed. Complete it from the job list.`
+          : shouldAutoComplete ? `Fuel details submitted & Job #${fuelLogModal.id} completed! Awaiting controller approval.`
           : `Fuel log (${liters}L) recorded successfully for ${fuelLogForm.vehicleRegNumber}! Awaiting controller approval.`)
       }
 

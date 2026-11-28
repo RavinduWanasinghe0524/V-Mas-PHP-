@@ -54,6 +54,7 @@ equal($vehicle['status'], 'SERVICE', 'Created vehicle status');
 $vehicle = api('PUT', "/api/vehicles/$vid", ['status' => 'AVAILABLE', 'model' => 'Car Updated']);
 equal($vehicle['status'], 'AVAILABLE', 'Edited vehicle status');
 equal(api('PATCH', "/api/vehicles/$vid/assign-driver", ['driverUsername' => 'auditdriver'])['driverUsername'], 'auditdriver', 'Assigned driver');
+$otherVehicle = api('POST', '/api/vehicles', ['registrationNo' => 'AUDIT-VEH-OTHER', 'manufacturer' => 'Test', 'model' => 'Other'], 201);
 api('POST', '/api/vehicles/bulk-mileage', [['id' => $vid, 'currentMileageKm' => 100]]);
 equal((int)api('GET', "/api/vehicles/$vid")['currentMileageKm'], 100, 'Bulk mileage');
 
@@ -72,6 +73,9 @@ $fuel = api('POST', '/api/fuel/controller/add', ['vehicleRegNumber' => 'AUDIT-VE
 $fid = (int)$fuel['id'];
 equal((float)$fuel['totalCost'], 1000.0, 'Fuel total');
 equal((float)api('PUT', "/api/fuel/controller/$fid", ['liters' => 11])['totalCost'], 1100.0, 'Edited fuel total');
+equal((float)api('PUT', "/api/fuel/controller/$fid", ['totalCost' => 1])['totalCost'], 1100.0, 'Forged fuel total ignored');
+api('PUT', "/api/fuel/controller/$fid", ['liters' => -1], 400);
+equal(count(api('GET', '/api/fuel/all?page=2')), 0, 'Empty second fuel page');
 equal(api('PATCH', "/api/fuel/controller/$fid/reject")['status'], 'REJECTED', 'Rejected fuel');
 equal(api('PATCH', "/api/fuel/controller/$fid/approve")['status'], 'APPROVED', 'Approved fuel');
 api('DELETE', "/api/fuel/controller/$fid");
@@ -82,11 +86,16 @@ $trip = api('POST', '/api/trips', ['driverUsername' => 'auditdriver', 'vehicleRe
 $tid = (int)$trip['id'];
 equal($trip['status'], 'ASSIGNED', 'Created trip');
 equal(api('PUT', "/api/trips/$tid", ['destination' => 'Updated destination'])['destination'], 'Updated destination', 'Edited trip');
+$secondTrip = api('POST', '/api/trips', ['driverUsername' => 'auditdriver', 'vehicleRegNumber' => 'AUDIT-VEH-1', 'destination' => 'Second destination', 'scheduledDate' => date('Y-m-d')], 201);
 $driverLogin = api('POST', '/api/auth/login', ['userName' => 'auditdriver', 'password' => 'AuditOnly#2026']);
 $adminToken = $token;
 $token = $driverLogin['token'];
-equal(count(api('GET', '/api/trips/my')), 1, 'Driver trip list');
+equal(count(api('GET', '/api/trips/my')), 2, 'Driver trip list');
 equal(api('GET', '/api/vehicles/my-vehicle')['registrationNo'], 'AUDIT-VEH-1', 'Driver assigned vehicle');
+equal(count(api('GET', '/api/vehicles')), 1, 'Driver vehicle list is scoped');
+api('GET', '/api/vehicles/' . $otherVehicle['id'], null, 403);
+api('GET', '/api/vehicles/registration/AUDIT-VEH-OTHER', null, 403);
+api('GET', '/api/vehicles/' . $otherVehicle['id'] . '/document/registration', null, 403);
 api('GET', '/api/users', null, 403);
 api('GET', '/api/fuel/all', null, 403);
 api('GET', '/api/vehicle-passes', null, 403);
@@ -103,6 +112,7 @@ $driverService = api('POST', '/api/services', ['vehicleRegNumber' => 'AUDIT-VEH-
 equal($driverService['status'], 'PENDING', 'Driver service awaits approval');
 equal(api('PUT', '/api/services/' . $driverService['id'], ['description' => 'Driver correction'])['status'], 'PENDING', 'Driver service edit');
 equal(api('PATCH', "/api/trips/$tid/start")['status'], 'STARTED', 'Started trip');
+api('PATCH', '/api/trips/' . $secondTrip['id'] . '/start', null, 400);
 equal(api('PATCH', "/api/trips/$tid/complete")['status'], 'COMPLETED', 'Completed trip');
 $token = $adminToken;
 $controllerLogin = api('POST', '/api/auth/login', ['userName' => 'auditcontroller', 'password' => 'AuditOnly#2026']);
@@ -121,6 +131,11 @@ $controllerFuel = api('POST', '/api/fuel/controller/add', ['vehicleRegNumber' =>
 equal($controllerFuel['status'], 'APPROVED', 'Controller fuel entry');
 equal(api('PATCH', '/api/fuel/controller/' . $driverFuel['id'] . '/approve')['status'], 'APPROVED', 'Controller approves driver fuel');
 equal(api('PATCH', '/api/services/' . $driverService['id'] . '/approve')['status'], 'APPROVED', 'Controller approves driver service');
+$token = $driverLogin['token'];
+api('PUT', '/api/fuel/my-logs/' . $driverFuel['id'], ['liters' => 1], 403);
+api('PUT', '/api/services/' . $driverService['id'], ['serviceCost' => 1], 403);
+api('POST', '/api/services/' . $driverService['id'] . '/attachment', [], 403);
+$token = $controllerLogin['token'];
 $token = $adminToken;
 api('DELETE', "/api/trips/$tid/delete");
 equal(count(api('GET', '/api/trips/deleted')), 1, 'Deleted trip list');
@@ -134,6 +149,11 @@ api('PATCH', "/api/vehicle-passes/$pid/status", ['status' => 'APPROVED'], 409);
 equal(api('PATCH', "/api/vehicle-passes/$pid/status", ['status' => 'REJECTED'])['status'], 'REJECTED', 'Admin pass rejection');
 api('DELETE', "/api/vehicle-passes/$pid");
 equal(count(api('GET', '/api/vehicle-passes')), 0, 'Pass deletion');
+equal(count(api('GET', '/api/vehicle-passes/deleted')), 1, 'Deleted pass retained');
+api('GET', '/api/vehicle-passes/check/' . $pass['passCode'] . '?phone=0000000000', null, 404);
+api('GET', "/api/vehicle-passes/$pid", null, 404);
+equal(api('PATCH', "/api/vehicle-passes/$pid/restore")['isDeleted'], false, 'Pass restored');
+equal(count(api('GET', '/api/vehicle-passes')), 1, 'Restored pass listed');
 
 api('DELETE', "/api/vehicles/$vid");
 equal(count(api('GET', '/api/vehicles/deleted')), 1, 'Deleted vehicle list');
@@ -141,5 +161,15 @@ equal(api('PATCH', "/api/vehicles/$vid/restore")['deleted'], false, 'Restored ve
 api('DELETE', "/api/users/$uid");
 equal(count(api('GET', '/api/users/deleted')), 1, 'Deleted user list');
 equal(api('PATCH', "/api/users/$uid/restore")['deleted'], false, 'Restored user');
+
+api('POST', '/api/auth/logout');
+api('GET', '/api/users/me', null, 401);
+$token = api('POST', '/api/auth/login', ['userName' => 'auditadmin_' . $database, 'password' => 'AuditOnly#2026'])['token'];
+api('PUT', '/api/users/me/password', ['currentPassword' => 'AuditOnly#2026', 'newPassword' => 'ChangedOnly#2026', 'confirmPassword' => 'ChangedOnly#2026']);
+api('GET', '/api/users/me', null, 401);
+$token = api('POST', '/api/auth/login', ['userName' => 'auditadmin_' . $database, 'password' => 'ChangedOnly#2026'])['token'];
+api('GET', '/api/users/me');
+for ($attempt = 0; $attempt < 10; $attempt++) api('POST', '/api/auth/forgot-password', ['email' => 'missing@example.invalid']);
+api('POST', '/api/auth/forgot-password', ['email' => 'missing@example.invalid'], 429);
 
 echo "$checked isolated Admin, Controller, and Driver API operations passed.\n";

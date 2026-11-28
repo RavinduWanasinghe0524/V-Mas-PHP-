@@ -68,21 +68,27 @@ route('PATCH', '/api/trips/{id}/restore', function ($p) {
 });
 foreach (['start', 'decline', 'complete'] as $action) {
     route('PATCH', "/api/trips/{id}/$action", function ($p) use ($action) {
-        $user = requireRole('DRIVER'); $id = (int)$p['id']; $trip = tripById($id);
-        if ($trip['driver_username'] !== $user['user_name']) fail('Trip is not assigned to you', 403);
-        $now = now(); $changes = ['updated_at' => $now];
-        if ($action === 'start') {
-            if ($trip['status'] !== 'ASSIGNED') fail('Only an assigned trip can be started');
-            if (row("SELECT id FROM trips WHERE driver_username = ? AND status = 'STARTED' AND is_deleted = 0 AND id <> ? LIMIT 1", [$user['user_name'], $id])) fail('Complete your active trip first');
-            $changes += ['status' => 'STARTED', 'started_at' => $now, 'responded_at' => $now];
-        } elseif ($action === 'decline') {
-            if ($trip['status'] !== 'ASSIGNED') fail('Only an assigned trip can be declined');
-            $changes += ['status' => 'DECLINED', 'decline_reason' => body()['reason'] ?? null, 'responded_at' => $now];
-        } else {
-            if (!in_array($trip['status'], ['ASSIGNED', 'STARTED'], true)) fail('Only an assigned or started trip can be completed');
-            $changes += ['status' => 'COMPLETED', 'completed_at' => $now];
-        }
-        updateRow('trips', $id, $changes);
+        $user = requireRole('DRIVER'); $id = (int)$p['id'];
+        db()->beginTransaction();
+        try {
+            if ($action === 'start') row('SELECT id FROM users WHERE id = ? FOR UPDATE', [$user['id']]);
+            $trip = row('SELECT * FROM trips WHERE id = ? AND is_deleted = 0 FOR UPDATE', [$id]) ?? fail('Record not found', 404);
+            if ($trip['driver_username'] !== $user['user_name']) fail('Trip is not assigned to you', 403);
+            $now = now(); $changes = ['updated_at' => $now];
+            if ($action === 'start') {
+                if ($trip['status'] !== 'ASSIGNED') fail('Only an assigned trip can be started');
+                if (row("SELECT id FROM trips WHERE driver_username = ? AND status = 'STARTED' AND is_deleted = 0 AND id <> ? LIMIT 1", [$user['user_name'], $id])) fail('Complete your active trip first');
+                $changes += ['status' => 'STARTED', 'started_at' => $now, 'responded_at' => $now];
+            } elseif ($action === 'decline') {
+                if ($trip['status'] !== 'ASSIGNED') fail('Only an assigned trip can be declined');
+                $changes += ['status' => 'DECLINED', 'decline_reason' => body()['reason'] ?? null, 'responded_at' => $now];
+            } else {
+                if (!in_array($trip['status'], ['ASSIGNED', 'STARTED'], true)) fail('Only an assigned or started trip can be completed');
+                $changes += ['status' => 'COMPLETED', 'completed_at' => $now];
+            }
+            updateRow('trips', $id, $changes);
+            db()->commit();
+        } catch (Throwable $e) { db()->rollBack(); throw $e; }
         notify($trip['assigned_by'] ?: 'CONTROLLER', 'Driver ' . $user['user_name'] . ' ' . $action . 'ed the trip to ' . $trip['destination'], 'TRIP_' . strtoupper($action));
         reply(tripDto(tripById($id)), 'Trip updated');
     });
