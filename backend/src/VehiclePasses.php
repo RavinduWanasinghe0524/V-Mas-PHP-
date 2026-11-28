@@ -32,7 +32,7 @@ function emailPassApprover(array $pass, string $stage, ?callable $sender = null)
 }
 
 route('GET', '/api/vehicle-passes/approval/{token}', function ($p) {
-    $pass = row('SELECT * FROM vehicle_passes WHERE approval_token_hash = ? AND approval_token_expires_at > ? AND status IN (?, ?)', [hash('sha256', $p['token']), now(), 'PENDING_HOD', 'PENDING_DEAN']);
+    $pass = row('SELECT * FROM vehicle_passes WHERE is_deleted = 0 AND approval_token_hash = ? AND approval_token_expires_at > ? AND status IN (?, ?)', [hash('sha256', $p['token']), now(), 'PENDING_HOD', 'PENDING_DEAN']);
     if (!$pass) fail('Approval link is invalid or expired', 404);
     reply(['passCode' => $pass['pass_code'], 'applicantName' => $pass['applicant_name'], 'faculty' => $pass['faculty'], 'department' => $pass['department'], 'vehicleRegNumber' => $pass['vehicle_reg_number'], 'status' => $pass['status']]);
 });
@@ -41,7 +41,7 @@ function decidePassApproval(string $token, string $decision, ?callable $sender =
     $decision = strtoupper($decision);
     if (!in_array($decision, ['APPROVE', 'REJECT'], true)) fail('Invalid decision');
     $hash = hash('sha256', $token);
-    $pass = row('SELECT * FROM vehicle_passes WHERE approval_token_hash = ? AND approval_token_expires_at > ? AND status IN (?, ?)', [$hash, now(), 'PENDING_HOD', 'PENDING_DEAN']);
+    $pass = row('SELECT * FROM vehicle_passes WHERE is_deleted = 0 AND approval_token_hash = ? AND approval_token_expires_at > ? AND status IN (?, ?)', [$hash, now(), 'PENDING_HOD', 'PENDING_DEAN']);
     if (!$pass) fail('Approval link is invalid or expired', 404);
     $isHod = $pass['status'] === 'PENDING_HOD';
     $next = $decision === 'REJECT' ? 'REJECTED' : ($isHod ? 'PENDING_DEAN' : 'APPROVED');
@@ -59,7 +59,7 @@ route('POST', '/api/vehicle-passes/approval/{token}', function ($p) {
 
 route('POST', '/api/vehicle-passes/{id}/resend-approval', function ($p) {
     requireRole('ADMIN', 'CONTROLLER');
-    $pass = byId('vehicle_passes', (int)$p['id'], true);
+    $pass = byId('vehicle_passes', (int)$p['id']);
     $stage = match ($pass['status']) { 'PENDING_HOD' => 'HOD', 'PENDING_DEAN' => 'DEAN', default => null };
     if (!$stage) fail('This application is not awaiting approval', 409);
     if (!envv('SENDGRID_API_KEY', '') || !filter_var(passApproverEmail($stage, $pass['faculty'], $pass['department']), FILTER_VALIDATE_EMAIL)) fail('Approver email or SendGrid is not configured', 409);
@@ -74,7 +74,7 @@ const VEHICLE_PASS_FIELDS = [
 ];
 
 function vehiclePassDto(array $row): array {
-    $dto = dto($row);
+    $dto = dto($row, [], ['is_deleted']);
     unset($dto['approvalTokenHash'], $dto['approvalTokenExpiresAt']);
     if (!empty($row['form_data']) && is_string($row['form_data'])) {
         $decoded = json_decode($row['form_data'], true);
@@ -185,17 +185,19 @@ function createPassApplication(array $data, ?callable $sender = null): array {
 }
 
 route('POST', '/api/vehicle-passes/apply', function () {
+    rateLimit('pass-application', 10, 3600);
     $result = createPassApplication(body());
     reply($result['pass'], $result['emailSent'] ? 'Vehicle pass application submitted and Head of Department notified' : 'Vehicle pass application saved; Head of Department email is not configured or could not be sent', 201);
 });
 
 // ── Public: Check Application Status with both reference and phone ───────────────
 route('GET', '/api/vehicle-passes/check/{code}', function ($p) {
+    rateLimit('pass-status', 60, 60);
     $code = strtoupper(trim($p['code'] ?? ''));
     $phone = trim((string)($_GET['phone'] ?? ''));
     if ($code === '' || $phone === '') fail('Pass code and phone number are required');
 
-    $pass = row('SELECT pass_code, form_type, status, rejection_reason, created_at FROM vehicle_passes WHERE pass_code = ? AND phone_number = ? LIMIT 1', [$code, $phone]);
+    $pass = row('SELECT pass_code, form_type, status, rejection_reason, created_at FROM vehicle_passes WHERE is_deleted = 0 AND pass_code = ? AND phone_number = ? LIMIT 1', [$code, $phone]);
     if (!$pass) fail('Vehicle pass application not found', 404);
 
     reply(dto($pass));
@@ -207,7 +209,7 @@ route('GET', '/api/vehicle-passes', function () {
     $status = $_GET['status'] ?? null;
     $type = $_GET['formType'] ?? null;
 
-    $conditions = [];
+    $conditions = ['is_deleted = 0'];
     $params = [];
 
     if ($status && in_array(strtoupper($status), ['PENDING', 'PENDING_HOD', 'PENDING_DEAN', 'APPROVED', 'REJECTED'], true)) {
@@ -227,10 +229,14 @@ route('GET', '/api/vehicle-passes', function () {
 });
 
 // ── Admin/Controller: Get single Vehicle Pass ──────────────────────────────────
+route('GET', '/api/vehicle-passes/deleted', function () {
+    requireRole('ADMIN');
+    reply(array_map('vehiclePassDto', allRows('vehicle_passes', true)));
+});
 route('GET', '/api/vehicle-passes/{id}', function ($p) {
     requireRole('ADMIN', 'CONTROLLER');
     $id = (int)$p['id'];
-    $pass = byId('vehicle_passes', $id, true);
+    $pass = byId('vehicle_passes', $id);
     reply(vehiclePassDto($pass));
 });
 
@@ -238,7 +244,7 @@ route('GET', '/api/vehicle-passes/{id}', function ($p) {
 route('PATCH', '/api/vehicle-passes/{id}/status', function ($p) {
     $user = requireRole('ADMIN', 'CONTROLLER');
     $id = (int)$p['id'];
-    $pass = byId('vehicle_passes', $id, true);
+    $pass = byId('vehicle_passes', $id);
 
     $data = body();
     $status = strtoupper((string)requireField($data, 'status'));
@@ -262,16 +268,22 @@ route('PATCH', '/api/vehicle-passes/{id}/status', function ($p) {
     }
 
     updateRow('vehicle_passes', $id, $updates);
-    $updated = byId('vehicle_passes', $id, true);
+    $updated = byId('vehicle_passes', $id);
 
     reply(vehiclePassDto($updated), "Vehicle pass status updated to $status");
 });
 
+route('PATCH', '/api/vehicle-passes/{id}/restore', function ($p) {
+    requireRole('ADMIN'); $id = (int)$p['id']; $pass = byId('vehicle_passes', $id, true);
+    if (!(int)$pass['is_deleted']) fail('Pass is not deleted', 409);
+    updateRow('vehicle_passes', $id, ['is_deleted' => 0, 'deleted_by' => null, 'deleted_at' => null]);
+    reply(vehiclePassDto(byId('vehicle_passes', $id)), 'Vehicle pass restored');
+});
 // ── Admin: Delete Pass ──────────────────────────────────────────────────────────
 route('DELETE', '/api/vehicle-passes/{id}', function ($p) {
-    requireRole('ADMIN');
+    $user = requireRole('ADMIN');
     $id = (int)$p['id'];
-    byId('vehicle_passes', $id, true);
-    query('DELETE FROM vehicle_passes WHERE id = ?', [$id]);
+    byId('vehicle_passes', $id);
+    updateRow('vehicle_passes', $id, ['is_deleted' => 1, 'deleted_by' => $user['user_name'], 'deleted_at' => now(), 'approval_token_hash' => null, 'approval_token_expires_at' => null]);
     reply(null, 'Vehicle pass application deleted');
 });

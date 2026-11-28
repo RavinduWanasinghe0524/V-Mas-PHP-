@@ -52,6 +52,12 @@ jobs:
       - name: Create isolated audit database
         run: php backend/tests/admin-isolated-db.php create "$DB_NAME"
 
+      - name: Verify audit migration and schema
+        run: |
+          php backend/bin/migrate-audit-fixes.php
+          php backend/bin/migrate-audit-fixes.php
+          php backend/bin/check-existing-db.php
+
       - name: Run PHP database checks
         run: |
           php backend/tests/vehicle-legacy-enums.php

@@ -120,7 +120,15 @@ export const fuelAPI = {
   getLogsByVehicle:     (reg)            => api.get(`/fuel/vehicle/${reg}`),
 
   // ── Controller / Admin (uses /api/fuel/controller/*) ────────────────────
-  getAllFuelLogs:        ()               => api.get('/fuel/all'),
+  getAllFuelLogs:        async ()          => {
+    const logs = []
+    for (let page = 1; ; page++) {
+      const response = await api.get('/fuel/all', { params: { page } })
+      const batch = response.data?.data || []
+      logs.push(...batch)
+      if (batch.length < 200) return { ...response, data: { ...response.data, data: logs } }
+    }
+  },
   controllerAddLog:     (data)           => api.post('/fuel/controller/add', data),
   controllerSearchById: (id)             => api.get(`/fuel/controller/search/${id}`),
   controllerUpdateLog:  (id, data)       => api.put(`/fuel/controller/${id}`, data),
@@ -202,6 +210,8 @@ export const vehiclePassAPI = {
   apply:        (data)       => api.post('/vehicle-passes/apply', data),
   checkStatus:  (code, phone) => api.get(`/vehicle-passes/check/${encodeURIComponent(code)}`, { params: { phone } }),
   getAll:       (status)     => api.get('/vehicle-passes', { params: status ? { status } : {} }),
+  getDeleted:   ()           => api.get('/vehicle-passes/deleted'),
+  restore:      (id)         => api.patch(`/vehicle-passes/${id}/restore`),
   getById:      (id)         => api.get(`/vehicle-passes/${id}`),
   updateStatus: (id, data)   => api.patch(`/vehicle-passes/${id}/status`, data),
   delete:       (id)         => api.delete(`/vehicle-passes/${id}`),

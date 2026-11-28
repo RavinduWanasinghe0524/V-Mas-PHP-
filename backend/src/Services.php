@@ -12,7 +12,8 @@ function driverMayUseVehicle(array $user, array $vehicle): bool {
 function serviceVisible(array $record, array $user): bool {
     if ($user['role'] !== 'DRIVER') return true;
     if ($record['created_by'] === $user['user_name']) return true;
-    return (bool)row('SELECT id FROM vehicles WHERE registration_no = ? AND driver_id = ? AND is_deleted = 0', [$record['vehicle_reg_number'], $user['id']]);
+    $vehicle = row('SELECT * FROM vehicles WHERE registration_no = ? AND is_deleted = 0', [$record['vehicle_reg_number']]);
+    return $vehicle && vehicleVisible($vehicle, $user);
 }
 function serviceAudit(int $id, string $name, array $before, array $after): void {
     $changes = [];
@@ -21,7 +22,7 @@ function serviceAudit(int $id, string $name, array $before, array $after): void 
 }
 function serviceList(array $user): array {
     if ($user['role'] !== 'DRIVER') return allRows('service_records');
-    return rows('SELECT s.* FROM service_records s WHERE s.is_deleted = 0 AND (s.created_by = ? OR EXISTS (SELECT 1 FROM vehicles v WHERE v.registration_no = s.vehicle_reg_number AND v.driver_id = ? AND v.is_deleted = 0)) ORDER BY s.id DESC', [$user['user_name'], $user['id']]);
+    return rows("SELECT s.* FROM service_records s WHERE s.is_deleted = 0 AND (s.created_by = ? OR EXISTS (SELECT 1 FROM vehicles v WHERE v.registration_no = s.vehicle_reg_number AND v.driver_id = ? AND v.is_deleted = 0) OR EXISTS (SELECT 1 FROM trips t WHERE t.vehicle_reg_number = s.vehicle_reg_number AND t.driver_username = ? AND t.status IN ('ASSIGNED', 'STARTED') AND t.is_deleted = 0)) ORDER BY s.id DESC", [$user['user_name'], $user['id'], $user['user_name']]);
 }
 
 route('GET', '/api/services/intervals', function () { actor(); reply(array_map('dto', rows('SELECT * FROM service_intervals ORDER BY vehicle_type, service_type'))); });
@@ -85,7 +86,17 @@ route('GET', '/api/services/{id}/attachment', function ($p) {
 });
 route('POST', '/api/services/{id}/attachment', function ($p) {
     $user = actor(); $id = (int)$p['id']; $record = serviceById($id); if (!serviceVisible($record, $user)) fail('Access denied', 403);
-    $path = saveUpload('services', (string)$id); updateRow('service_records', $id, ['attachment_path' => $path]);
+    if ($user['role'] === 'DRIVER' && ($record['created_by'] !== $user['user_name'] || $record['status'] !== 'PENDING')) fail('Only your pending service records can be changed', 403);
+    db()->beginTransaction();
+    try {
+        $current = row('SELECT * FROM service_records WHERE id = ? AND is_deleted = 0 FOR UPDATE', [$id]) ?? fail('Record not found', 404);
+        if ($user['role'] === 'DRIVER' && ($current['created_by'] !== $user['user_name'] || $current['status'] !== 'PENDING')) fail('Only your pending service records can be changed', 403);
+        $path = saveUpload('services', (string)$id);
+        serviceAudit($id, $user['user_name'], $current, ['attachment_path' => $path]);
+        updateRow('service_records', $id, ['attachment_path' => $path]);
+        db()->commit();
+    }
+    catch (Throwable $e) { db()->rollBack(); throw $e; }
     reply(serviceDto(serviceById($id)), 'Attachment uploaded');
 });
 route('GET', '/api/services', function () { reply(array_map('serviceDto', serviceList(actor()))); });
@@ -115,7 +126,7 @@ route('POST', '/api/services', function () {
 });
 route('PUT', '/api/services/{id}', function ($p) {
     $user = actor(); $id = (int)$p['id']; $old = serviceById($id); if (!serviceVisible($old, $user)) fail('Access denied', 403);
-    if ($user['role'] === 'DRIVER' && $old['created_by'] !== $user['user_name']) fail('You can only edit records you created', 403);
+    if ($user['role'] === 'DRIVER' && ($old['created_by'] !== $user['user_name'] || $old['status'] !== 'PENDING')) fail('Only your pending service records can be changed', 403);
     $changes = fields(body(), SERVICE_FIELDS);
     foreach (['current_mileage_km', 'service_cost'] as $field) {
         if (array_key_exists($field, $changes) && (!is_numeric($changes[$field]) || (float)$changes[$field] < 0)) fail('Invalid service mileage or cost');
@@ -128,6 +139,10 @@ route('PUT', '/api/services/{id}', function ($p) {
     if ($user['role'] === 'DRIVER') $changes['status'] = 'PENDING';
     db()->beginTransaction();
     try {
+        if ($user['role'] === 'DRIVER') {
+            $current = row('SELECT created_by, status FROM service_records WHERE id = ? AND is_deleted = 0 FOR UPDATE', [$id]) ?? fail('Record not found', 404);
+            if ($current['created_by'] !== $user['user_name'] || $current['status'] !== 'PENDING') fail('Only your pending service records can be changed', 403);
+        }
         serviceAudit($id, $user['user_name'], $old, $changes);
         updateRow('service_records', $id, $changes);
         if (($changes['status'] ?? $old['status']) === 'APPROVED') {

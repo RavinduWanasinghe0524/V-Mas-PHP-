@@ -22,6 +22,7 @@ const VehiclePassAdminPage = () => {
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [formTypeFilter, setFormTypeFilter] = useState('ALL')
   const [searchTerm, setSearchTerm] = useState('')
+  const [showDeleted, setShowDeleted] = useState(false)
 
   // Reject modal state
   const [rejectModalOpen, setRejectModalOpen] = useState(false)
@@ -34,7 +35,7 @@ const VehiclePassAdminPage = () => {
     setLoading(true)
     setError('')
     try {
-      const res = await vehiclePassAPI.getAll()
+      const res = await (showDeleted ? vehiclePassAPI.getDeleted() : vehiclePassAPI.getAll())
       if (res.data?.success && Array.isArray(res.data?.data)) {
         setPasses(res.data.data)
       }
@@ -47,7 +48,7 @@ const VehiclePassAdminPage = () => {
 
   useEffect(() => {
     fetchPasses()
-  }, [])
+  }, [showDeleted])
 
   // Approve Pass
   const handleApprove = async (pass) => {
@@ -96,13 +97,19 @@ const VehiclePassAdminPage = () => {
 
   // Delete Pass (Admin only)
   const handleDelete = async (id) => {
-    if (!window.confirm('Are you sure you want to delete this pass application?')) return
+    if (!window.confirm('Move this pass application to deleted records?')) return
     try {
       await vehiclePassAPI.delete(id)
       await fetchPasses()
     } catch (err) {
       alert(err.response?.data?.message || 'Failed to delete pass application')
     }
+  }
+  const handleRestore = async (id) => {
+    setProcessingId(id)
+    try { await vehiclePassAPI.restore(id); await fetchPasses() }
+    catch (err) { alert(err.response?.data?.message || 'Failed to restore pass application') }
+    finally { setProcessingId(null) }
   }
 
   // Print single pass slip
@@ -203,6 +210,7 @@ const VehiclePassAdminPage = () => {
               </p>
             </div>
 
+            {user?.role === 'ADMIN' && <button type="button" onClick={() => setShowDeleted(!showDeleted)} style={{ padding: '0.65rem 1.2rem', borderRadius: 10, background: D.surface, border: `1px solid ${D.border}`, color: D.text, cursor: 'pointer' }}>{showDeleted ? 'Active passes' : 'Deleted passes'}</button>}
             <button
               onClick={fetchPasses}
               disabled={loading}
@@ -401,8 +409,9 @@ const VehiclePassAdminPage = () => {
                         {/* Actions */}
                         <td style={{ padding: '1rem 1.2rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
                           <div style={{ display: 'inline-flex', gap: 6 }}>
-                            {pass.status?.startsWith('PENDING_') && <button type="button" disabled={processingId === pass.id} onClick={() => handleResendApproval(pass)} style={{ padding: '0.45rem 0.8rem', borderRadius: 8, border: `1px solid ${D.border}`, background: D.surfaceHi, color: D.text, cursor: 'pointer' }}>Resend email</button>}
-                            {pass.status === 'PENDING' && (
+                            {showDeleted && user?.role === 'ADMIN' && <button type="button" disabled={processingId === pass.id} onClick={() => handleRestore(pass.id)} style={{ padding: '0.45rem 0.8rem', borderRadius: 8, border: `1px solid ${D.border}`, background: D.surfaceHi, color: D.text, cursor: 'pointer' }}>Restore</button>}
+                            {!showDeleted && pass.status?.startsWith('PENDING_') && <button type="button" disabled={processingId === pass.id} onClick={() => handleResendApproval(pass)} style={{ padding: '0.45rem 0.8rem', borderRadius: 8, border: `1px solid ${D.border}`, background: D.surfaceHi, color: D.text, cursor: 'pointer' }}>Resend email</button>}
+                            {!showDeleted && pass.status === 'PENDING' && (
                               <>
                                 <button
                                   onClick={() => handleApprove(pass)}
@@ -437,7 +446,7 @@ const VehiclePassAdminPage = () => {
                               </>
                             )}
 
-                            {pass.status === 'APPROVED' && (
+                            {!showDeleted && pass.status === 'APPROVED' && (
                               <button
                                 onClick={() => handlePrintSlip(pass)}
                                 title="Print Pass Slip"
@@ -453,7 +462,7 @@ const VehiclePassAdminPage = () => {
                               </button>
                             )}
 
-                            {user?.role === 'ADMIN' && (
+                            {!showDeleted && user?.role === 'ADMIN' && (
                               <button
                                 onClick={() => handleDelete(pass.id)}
                                 title="Delete Record"

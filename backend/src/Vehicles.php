@@ -33,7 +33,7 @@ function vehicleStorageValues(array $values): array {
 function vehicleDto(array $vehicle): array {
     $driver = null;
     if (!empty($vehicle['driver_id'])) $driver = scalar('SELECT user_name FROM users WHERE id = ?', [$vehicle['driver_id']]);
-    if (!$driver) $driver = scalar("SELECT driver_username FROM trips WHERE vehicle_reg_number = ? AND status = 'STARTED' AND is_deleted = 0 ORDER BY id DESC LIMIT 1", [$vehicle['registration_no']]);
+    if (!$driver) $driver = scalar("SELECT driver_username FROM trips WHERE vehicle_reg_number = ? AND status IN ('ASSIGNED', 'STARTED') AND is_deleted = 0 ORDER BY id DESC LIMIT 1", [$vehicle['registration_no']]);
     unset($vehicle['driver_id'], $vehicle['vehicle_name']);
     $result = dto($vehicle, ['chassis_no' => 'chassisNumber', 'engine_no' => 'engineNumber', 'is_deleted' => 'deleted'], ['is_deleted']);
     if ($result['status'] !== null) $result['status'] = vehicleEnum('status', $result['status']);
@@ -42,6 +42,14 @@ function vehicleDto(array $vehicle): array {
     return $result;
 }
 function vehicleByReg(string $reg): array { return row('SELECT * FROM vehicles WHERE registration_no = ? AND is_deleted = 0', [$reg]) ?? fail('Vehicle not found', 404); }
+function vehicleVisible(array $vehicle, array $user): bool {
+    return $user['role'] !== 'DRIVER' || (int)($vehicle['driver_id'] ?? 0) === (int)$user['id']
+        || (bool)row("SELECT id FROM trips WHERE vehicle_reg_number = ? AND driver_username = ? AND status IN ('ASSIGNED', 'STARTED') AND is_deleted = 0 LIMIT 1", [$vehicle['registration_no'], $user['user_name']]);
+}
+function visibleVehicle(array $vehicle, array $user): array {
+    if (!vehicleVisible($vehicle, $user)) fail('Access denied', 403);
+    return $vehicle;
+}
 
 route('GET', '/api/vehicles/my-vehicle', function () {
     $user = actor();
@@ -51,9 +59,15 @@ route('GET', '/api/vehicles/my-vehicle', function () {
     reply(vehicleDto($vehicle));
 });
 route('GET', '/api/vehicles/deleted', function () { requireRole('ADMIN', 'CONTROLLER'); reply(array_map('vehicleDto', allRows('vehicles', true))); });
-route('GET', '/api/vehicles/registration/{registrationNo}', function ($p) { actor(); reply(vehicleDto(vehicleByReg($p['registrationNo']))); });
-route('GET', '/api/vehicles', function () { actor(); reply(array_map('vehicleDto', allRows('vehicles'))); });
-route('GET', '/api/vehicles/{id}', function ($p) { actor(); reply(vehicleDto(byId('vehicles', (int)$p['id']))); });
+route('GET', '/api/vehicles/registration/{registrationNo}', function ($p) { $user = actor(); reply(vehicleDto(visibleVehicle(vehicleByReg($p['registrationNo']), $user))); });
+route('GET', '/api/vehicles', function () {
+    $user = actor();
+    $vehicles = $user['role'] === 'DRIVER'
+        ? rows("SELECT v.* FROM vehicles v WHERE v.is_deleted = 0 AND (v.driver_id = ? OR EXISTS (SELECT 1 FROM trips t WHERE t.vehicle_reg_number = v.registration_no AND t.driver_username = ? AND t.status IN ('ASSIGNED', 'STARTED') AND t.is_deleted = 0)) ORDER BY v.id DESC", [$user['id'], $user['user_name']])
+        : allRows('vehicles');
+    reply(array_map('vehicleDto', $vehicles));
+});
+route('GET', '/api/vehicles/{id}', function ($p) { $user = actor(); reply(vehicleDto(visibleVehicle(byId('vehicles', (int)$p['id']), $user))); });
 
 route('POST', '/api/vehicles', function () {
     requireRole('ADMIN', 'CONTROLLER'); $data = body();
@@ -131,6 +145,6 @@ route('POST', '/api/vehicles/{id}/document/{docType}', function ($p) {
     reply(vehicleDto(byId('vehicles', $id)), 'Document uploaded');
 });
 route('GET', '/api/vehicles/{id}/document/{docType}', function ($p) {
-    actor(); $vehicle = byId('vehicles', (int)$p['id']);
+    $user = actor(); $vehicle = visibleVehicle(byId('vehicles', (int)$p['id']), $user);
     streamUpload((string)$vehicle[vehicleDocumentColumn($p['docType'])]);
 });
